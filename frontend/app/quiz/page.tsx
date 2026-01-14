@@ -144,32 +144,57 @@ export default function QuizPage() {
           </div>
         )}
 
-        {/* --- عرض النتيجة (تظهر بعد التصحيح) --- */}
+       {/* --- عرض النتيجة والشرح --- */}
         {result && (
-          <div className="bg-green-50 border border-green-200 p-8 rounded-2xl shadow-lg mb-8 text-center animate-pulse-once">
-            <h2 className="text-3xl font-bold text-green-800 mb-2">🎉 تم التصحيح بنجاح!</h2>
-            <p className="text-5xl font-black text-green-600 my-4">{result.score}%</p>
+          <div className="space-y-8 animate-fade-in">
+            {/* بطاقة الدرجة */}
+            <div className={`p-8 rounded-2xl shadow-lg text-center border-2 
+              ${result.score >= 60 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              <h2 className="text-3xl font-bold mb-2">
+                {result.score >= 60 ? '🎉 أحسنت!' : 'حظ أوفر المرة القادمة!'}
+              </h2>
+              <p className={`text-6xl font-black my-4 ${result.score >= 60 ? 'text-green-600' : 'text-red-600'}`}>
+                {result.score.toFixed(1)}%
+              </p>
+            </div>
+
+            {/* مراجعة الإجابات (الميزة الجديدة) */}
+            <h3 className="text-2xl font-bold text-gray-800 border-b pb-2">🔍 مراجعة الأخطاء والشرح</h3>
             
-            {result.weak_concepts.length > 0 ? (
-              <div className="bg-white p-4 rounded-xl mt-4">
-                <p className="text-red-500 font-bold mb-2">⚠️ مفاهيم تحتاج مراجعة:</p>
-                <div className="flex flex-wrap gap-2 justify-center">
-                  {result.weak_concepts.map((c, i) => (
-                    <span key={i} className="px-3 py-1 bg-red-100 text-red-700 rounded-full text-sm">
-                      {c}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p className="text-blue-600 font-bold mt-4">أداء ممتاز! لا توجد نقاط ضعف. 🌟</p>
-            )}
-            
+            <div className="space-y-4">
+              {questions.map((q, idx) => {
+                const isCorrect = answers[idx] === q.correct_answer;
+                const userAnswer = answers[idx];
+                
+                return (
+                  <div key={idx} className={`p-6 rounded-xl border-2 ${isCorrect ? 'border-green-100 bg-green-50' : 'border-red-100 bg-white'}`}>
+                    <p className="font-bold text-lg mb-2">س{idx+1}: {q.text}</p>
+                    
+                    <div className="flex gap-4 text-sm mb-4">
+                      <span className={isCorrect ? "text-green-700 font-bold" : "text-red-600 font-bold"}>
+                        إجابتك: {userAnswer} {isCorrect ? '✅' : '❌'}
+                      </span>
+                      {!isCorrect && (
+                        <span className="text-green-700 font-bold">
+                          الصحيح: {q.correct_answer}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* زر الشرح (يظهر فقط عند الخطأ) */}
+                    {!isCorrect && (
+                      <ExplanationButton concept={q.concept} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
             <button 
               onClick={() => { setQuestions([]); setResult(null); }}
-              className="mt-6 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              className="w-full py-4 bg-gray-900 text-white font-bold rounded-xl hover:bg-black"
             >
-              اختبار جديد
+              اختبار جديد 🔄
             </button>
           </div>
         )}
@@ -220,5 +245,46 @@ export default function QuizPage() {
         )}
       </div>
     </div>
+  );
+}
+// مكون فرعي لزر الشرح
+function ExplanationButton({ concept }: { concept: string }) {
+  const [explanation, setExplanation] = useState<{text: string, page: number} | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchExplanation = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ concept }),
+      });
+      const data = await res.json();
+      setExplanation(data);
+    } catch (e) {
+      alert("تعذر جلب الشرح");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (explanation) {
+    return (
+      <div className="mt-3 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-gray-700">
+        <p className="font-bold text-yellow-800 mb-1">📖 من الكتاب المدرسي (صفحة {explanation.page}):</p>
+        <p>{explanation.text}</p>
+      </div>
+    );
+  }
+
+  return (
+    <button 
+      onClick={fetchExplanation}
+      disabled={loading}
+      className="mt-2 text-blue-600 text-sm font-bold underline hover:text-blue-800 flex items-center gap-1"
+    >
+      {loading ? "جاري البحث في الكتاب..." : "لماذا إجابتي خاطئة؟ (شاهد الشرح)"}
+    </button>
   );
 }
