@@ -1,9 +1,9 @@
 import os
 import sqlite3
 import json
-import pandas as pd
-import faiss
 import pickle
+import faiss
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
@@ -16,104 +16,48 @@ DB_PATH = os.path.join(DATA_DIR, "edurag.db")
 
 # تأكد من وجود المجلدات
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(RAG_DIR, exist_ok=True)
 
-# --- متغيرات عالمية ---
+# --- إعداد OpenAI/Groq ---
+# يفضل وضع المفتاح في متغيرات البيئة، لكن يمكن وضعه هنا مؤقتاً
+API_KEY = os.environ.get("OPENAI_API_KEY") 
+client = OpenAI(
+    base_url="https://api.groq.com/openai/v1", # نستخدم Groq للسرعة، أو يمكنك حذف هذا السطر لاستخدام OpenAI الأصلي
+    api_key=API_KEY
+)
+
+# --- متغيرات RAG العالمية ---
 index = None
 chunks = []
 embedder = None
 
 def load_rag_models():
-    """تحميل فهرس البحث والذكاء الاصطناعي عند بدء التشغيل"""
+    """تحميل نماذج البحث (Embedding + FAISS) مرة واحدة عند التشغيل"""
     global index, chunks, embedder
     
-    if embedder is None:
-        print("⏳ جاري تحميل نموذج اللغة (SentenceTransformer)...")
-        embedder = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2') 
-    
-    index_path = os.path.join(RAG_DIR, "math.index")
-    chunks_path = os.path.join(RAG_DIR, "chunks.pkl")
-    
-    if os.path.exists(index_path) and os.path.exists(chunks_path):
-        if index is None:
-            print("📚 تحميل الفهرس الدلالي...")
+    try:
+        print("⏳ جاري تحميل نموذج التضمين (SentenceTransformer)...")
+        # نستخدم نموذج خفيف ويدعم العربية بشكل جيد
+        embedder = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+        
+        index_path = os.path.join(RAG_DIR, "index.faiss") # أو math.index حسب التسمية لديك
+        chunks_path = os.path.join(RAG_DIR, "chunks.pkl")
+        
+        if os.path.exists(index_path) and os.path.exists(chunks_path):
+            print("📚 تحميل الفهرس وقاعدة البيانات المتجهة...")
             index = faiss.read_index(index_path)
             with open(chunks_path, "rb") as f:
                 chunks = pickle.load(f)
-            print("✅ تم تحميل بيانات RAG بنجاح!")
-    else:
-        print("⚠️ تحذير: ملفات الفهرس غير موجودة. يجب تشغيل build_index.py أولاً.")
+            print("✅ تم تحميل نظام RAG بنجاح!")
+        else:
+            print("⚠️ تحذير: ملفات الفهرس غير موجودة. لن يعمل البحث في الكتاب.")
+            
+    except Exception as e:
+        print(f"❌ خطأ أثناء تحميل النماذج: {e}")
 
+# تحميل النماذج عند استيراد الملف
 load_rag_models()
 
-# ----------------------------- 1. البحث والشرح (RAG + Generative AI) ----------------------------- #
-
-def get_explanation_from_book(concept: str, api_key: str = None):
-    """
-    1. يبحث في الكتاب عن النص الخام (Retrieval).
-    2. يرسل النص للذكاء الاصطناعي لتنظيفه وشرحه (Generation).
-    """
-    global index, chunks, embedder
-    
-    if index is None or not chunks:
-        load_rag_models()
-        if index is None:
-            return {"text": "عذراً، الفهرس غير جاهز أو الملفات مفقودة.", "page": 0}
-
-    # 1. البحث الدلالي (Retrieval)
-    query_vector = embedder.encode([concept])
-    D, I = index.search(query_vector, 1) # نأخذ أفضل نتيجة
-    top_idx = I[0][0]
-    
-    if top_idx == -1:
-        return {"text": "لم يتم العثور على معلومة مشابهة في الكتاب.", "page": 0}
-        
-    result_chunk = chunks[top_idx]
-    raw_text = result_chunk.get('content', '')
-    page_number = result_chunk.get('page_number', 0)
-
-    # إذا لم يتوفر مفتاح API، نرجع النص الخام كما هو
-    if not api_key:
-        return {
-            "text": f"⚠️ (نص خام من الكتاب - لتنظيفه وفر API Key):\n{raw_text[:500]}...",
-            "page": page_number
-        }
-
-    # 2. التوليد والصياغة (Generation) باستخدام Groq
-    try:
-        client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
-        
-        prompt = f"""
-        لديك نص مستخرج بتقنية OCR من كتاب مدرسي (يحتوي على أخطاء ورموز).
-        
-        النص المستخرج (صفحة {page_number}):
-        {raw_text}
-        
-        سؤال الطالب: {concept}
-        
-        المطلوب:
-        1. تجاهل الرموز الغريبة والأخطاء الإملائية الناتجة عن الـ OCR.
-        2. اشرح المفهوم للطالب باللغة العربية بوضوح وبساطة بناءً على النص فقط.
-        3. ابدأ إجابتك بعبارة: "بناءً على الصفحة {page_number} من الكتاب، فإن..."
-        """
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "أنت معلم رياضيات مساعد. تشرح المفاهيم بناء على محتوى الكتاب بدقة."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
-        )
-        
-        cleaned_explanation = response.choices[0].message.content
-        return {"text": cleaned_explanation, "page": page_number}
-
-    except Exception as e:
-        return {"text": f"حدث خطأ أثناء معالجة الذكاء الاصطناعي: {str(e)}", "page": page_number}
-
-# ----------------------------- 2. بقية الدوال (قاعدة البيانات والكويزات) ----------------------------- #
-# (لم نغير فيها شيئاً للحفاظ على عمل النظام السابق)
+# ----------------------------- دوال قاعدة البيانات ----------------------------- #
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -121,80 +65,176 @@ def get_db_connection():
     return conn
 
 def init_db():
-    with get_db_connection() as conn:
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, student TEXT, chapter INTEGER, score REAL, total_questions INTEGER, weak_concepts TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS attempt_details (id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id INTEGER, question_text TEXT, user_answer TEXT, correct_answer TEXT, is_correct BOOLEAN, concept TEXT, FOREIGN KEY(attempt_id) REFERENCES attempts(id))''')
-        conn.commit()
+    """تهيئة جداول قاعدة البيانات"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    # جدول المستخدمين
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            role TEXT DEFAULT 'student'
+        )
+    ''')
+    # جدول نتائج الاختبارات
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS quiz_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            topic TEXT,
+            score INTEGER,
+            total_questions INTEGER,
+            date TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-# في ملف backend/app/core.py
+# ----------------------------- دوال البحث والتوليد (Core Logic) ----------------------------- #
 
-def generate_quiz_logic(api_key: str, chapters: list, num_questions: int, focus_concepts: list = []):
-    if not api_key: return {"error": "API Key Required"}
+def get_relevant_context(query, k=3):
+    """البحث عن النصوص ذات الصلة في الكتاب"""
+    global index, chunks, embedder
     
-    client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
+    if index is None or embedder is None:
+        return ""
     
-    # منطق التوجيه (Prompt Engineering)
-    if focus_concepts:
-        # إذا كان اختبار تحسين
-        topic_desc = f"Focus 70% of the questions on these weak concepts: {', '.join(focus_concepts)}. The remaining 30% should be general review of Chapters {chapters}."
-        quiz_type = "Remedial/Improvement Quiz"
-    else:
-        # إذا كان اختبار عادي
-        topic_desc = f"Cover key concepts from Math Book Chapters: {chapters}."
-        quiz_type = "Standard Assessment Quiz"
+    try:
+        query_vector = embedder.encode([query])
+        # البحث عن أقرب k نصوص
+        distances, indices = index.search(query_vector, k)
+        
+        results = []
+        for idx in indices[0]:
+            if 0 <= idx < len(chunks):
+                # دمج النص مع رقم الصفحة للتوثيق
+                text = chunks[idx].get('content', '')
+                page = chunks[idx].get('page_number', '?')
+                results.append(f"[صفحة {page}]: {text}")
+        
+        return "\n\n".join(results)
+    except Exception as e:
+        print(f"Error in RAG search: {e}")
+        return ""
 
+def generate_quiz(topic: str):
+    """
+    توليد اختبار بناءً على الموضوع باستخدام RAG + LLM
+    """
+    # 1. جلب السياق من الكتاب (RAG)
+    print(f"🔍 البحث عن معلومات حول: {topic}")
+    context_text = get_relevant_context(topic)
+    
+    if not context_text:
+        context_text = "لا توجد معلومات محددة في الكتاب، قم بتوليد أسئلة عامة صحيحة عن الموضوع."
+
+    # 2. تجهيز البرومبت المحسن (Prompt Engineering)
+    # هذا هو المكان الذي نضع فيه البرومبت المطور
     prompt = f"""
-    You are a math teacher. Create {num_questions} multiple-choice questions (MCQ) for Middle School level.
-    Context: {quiz_type}.
-    Instructions: {topic_desc}
-    Language: Arabic.
+    أنت خبير تعليمي متخصص. قم بإنشاء اختبار قصير من 5 أسئلة اختيار من متعدد.
     
-    Output JSON ONLY in this exact format:
-    {{ "questions": [ 
-        {{ 
-            "id": 1, 
-            "text": "Question text here?", 
-            "options": ["Option A", "Option B", "Option C", "Option D"], 
-            "correct_answer": "Option A", 
-            "concept": "Name of the math concept tested (e.g., Pythagoras, Algebra)" 
-        }} 
-    ] }}
+    الموضوع المطلوب: {topic}
+    
+    استخدم المعلومات التالية من الكتاب الدراسي كمرجع أساسي (السياق):
+    --- بداية السياق ---
+    {context_text}
+    --- نهاية السياق ---
+
+    الشروط الصارمة للمخرجات:
+    1. المخرج يجب أن يكون **JSON Array** نقي فقط (بدون markdown ```json).
+    2. اللغة: العربية الفصحى.
+    3. البنية المطلوبة لكل عنصر:
+       - "question": نص السؤال.
+       - "options": قائمة من 4 خيارات نصية.
+       - "answer": الخيار الصحيح (يجب أن يكون مطابقاً حرفياً لأحد الخيارات).
+    4. اجعل الخيارات الخاطئة (Distractors) ذكية ومنطقية.
+
+    مثال للمخرج المتوقع:
+    [
+      {{
+        "question": "ما هي وحدة قياس القوة؟",
+        "options": ["النيوتن", "الجول", "الواط", "المتر"],
+        "answer": "النيوتن"
+      }}
+    ]
     """
 
     try:
+        # 3. إرسال الطلب للذكاء الاصطناعي
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": "Return valid JSON only. No markdown."}, {"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.4
+            model="llama-3.3-70b-versatile", # نموذج سريع وقوي للعربية
+            messages=[
+                {"role": "system", "content": "You are a helpful API that returns raw JSON arrays only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5 # تقليل العشوائية لضمان تنسيق JSON
         )
-        data = json.loads(response.choices[0].message.content)
-        return data.get("questions", [])
+
+        content = response.choices[0].message.content.strip()
+        
+        # 4. تنظيف النص من علامات الـ Markdown إذا وجدت
+        if content.startswith("```json"):
+            content = content.replace("```json", "").replace("```", "")
+        elif content.startswith("```"):
+            content = content.replace("```", "")
+            
+        # 5. تحويل النص إلى JSON
+        quiz_data = json.loads(content)
+        return quiz_data
+
     except Exception as e:
-        return {"error": str(e)}
+        print(f"❌ Error generating quiz: {e}")
+        # إرجاع سؤال وهمي في حال الخطأ لتجنب توقف الواجهة
+        return [
+            {
+                "question": f"لم نتمكن من توليد أسئلة حول {topic}. هل تريد المحاولة مرة أخرى؟",
+                "options": ["نعم", "لا", "ربما", "لاحقاً"],
+                "answer": "نعم"
+            }
+        ]
 
-def save_submission(student_name: str, chapter: int, results: dict):
-    conn = get_db_connection()
-    c = conn.cursor()
-    correct = sum(1 for r in results['details'] if r['is_correct'])
-    total = len(results['details'])
-    score = (correct / total) * 100 if total > 0 else 0
-    weak_concepts = list(set([r['concept'] for r in results['details'] if not r['is_correct']]))
-    c.execute('INSERT INTO attempts (student, chapter, score, total_questions, weak_concepts) VALUES (?,?,?,?,?)', (student_name, chapter, score, total, ",".join(weak_concepts)))
-    attempt_id = c.lastrowid
-    for det in results['details']:
-        c.execute('INSERT INTO attempt_details (attempt_id, question_text, user_answer, correct_answer, is_correct, concept) VALUES (?,?,?,?,?,?)', (attempt_id, det['question'], det['user_answer'], det['correct_answer'], det['is_correct'], det['concept']))
-    conn.commit()
-    conn.close()
-    return {"status": "saved", "score": score, "weak_concepts": weak_concepts}
-
-def get_dashboard_stats():
+def get_dashboard_data():
+    """جلب بيانات الطلاب الوهمية لعرضها في لوحة تحكم المعلم"""
     conn = get_db_connection()
     try:
-        df = pd.read_sql("SELECT student, AVG(score) as avg_score FROM attempts GROUP BY student", conn)
-        return df.to_dict(orient="records") if not df.empty else []
+        # جلب الطلاب ونتائجهم المجمعة
+        cursor = conn.cursor()
+        
+        # نتأكد أولاً أن الجدول ممتلئ (إذا كان فارغاً يمكننا ملؤه ببيانات وهمية هنا أو في سكربت منفصل)
+        # الكويري التالي يحسب متوسط الدرجات وعدد الاختبارات لكل طالب
+        query = """
+        SELECT 
+            u.id, 
+            u.name, 
+            u.email, 
+            COUNT(q.id) as quizzes_taken, 
+            AVG(CASE WHEN q.total_questions > 0 THEN (CAST(q.score AS FLOAT) / q.total_questions) * 100 ELSE 0 END) as average_score
+        FROM users u
+        LEFT JOIN quiz_results q ON u.id = q.user_id
+        WHERE u.role = 'student'
+        GROUP BY u.id
+        """
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        stats = []
+        for row in rows:
+            stats.append({
+                "id": row["id"],
+                "name": row["name"],
+                "email": row["email"],
+                "quizzes_taken": row["quizzes_taken"],
+                "average_score": round(row["average_score"] if row["average_score"] else 0, 1)
+            })
+            
+        return stats
+    except Exception as e:
+        print(f"Error fetching stats: {e}")
+        return []
     finally:
         conn.close()
 
+# تهيئة قاعدة البيانات عند استيراد الملف
 init_db()

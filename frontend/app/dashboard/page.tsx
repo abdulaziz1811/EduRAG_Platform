@@ -1,120 +1,125 @@
 "use client";
 import { useEffect, useState } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import Navbar from '../../components/Navbar';
+import { motion } from 'framer-motion';
+
+interface Student {
+  id: number;
+  name: string;
+  email: string;
+  quizzes_taken: number;
+  average_score: number;
+}
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<any[]>([]);
+  const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // جلب البيانات من الباك إند
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const res = await fetch('http://127.0.0.1:8000/api/dashboard');
-        const data = await res.json();
-        setStats(data.stats);
-      } catch (error) {
-        console.error("فشل جلب البيانات");
-      } finally {
+    // محاكاة جلب البيانات من الـ API الذي أنشأناه
+    fetch('http://localhost:8000/api/dashboard/stats')
+      .then(res => res.json())
+      .then(data => {
+        setStudents(data.students);
         setLoading(false);
-      }
-    };
-    fetchStats();
+      })
+      .catch(err => {
+        console.error("Failed to fetch stats", err);
+        setLoading(false);
+      });
   }, []);
 
-  // ألوان الرسم البياني
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042'];
-
-  if (loading) return <div className="p-10 text-center">جاري تحميل البيانات... ⏳</div>;
-
   return (
-    <div className="min-h-screen bg-gray-50 p-8" dir="rtl">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-800">لوحة تحكم المعلم 👨‍🏫</h1>
-          <span className="bg-blue-100 text-blue-800 px-4 py-2 rounded-full font-bold text-sm">
-             عدد الطلاب: {stats.length}
-          </span>
+    <div className="min-h-screen bg-gray-50 text-right" dir="rtl">
+      <Navbar />
+      
+      <main className="max-w-7xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">لوحة تحكم المعلم</h1>
+          <p className="mt-2 text-gray-600">متابعة أداء الطلاب وتقدمهم في الاختبارات</p>
         </div>
 
-        {/* --- بطاقات الملخص السريع --- */}
+        {/* بطاقات إحصائيات سريعة */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white p-6 rounded-xl shadow-sm border-r-4 border-blue-500">
-            <p className="text-gray-500 mb-1">متوسط درجات الفصل</p>
-            <h2 className="text-4xl font-bold text-gray-800">
-              {stats.length > 0 
-                ? (stats.reduce((acc, curr) => acc + curr.avg_score, 0) / stats.length).toFixed(1) 
-                : 0}%
-            </h2>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <h3 className="text-gray-500 text-sm">إجمالي الطلاب</h3>
+            <p className="text-3xl font-bold text-blue-600">{students.length}</p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border-r-4 border-green-500">
-            <p className="text-gray-500 mb-1">أعلى درجة</p>
-            <h2 className="text-4xl font-bold text-gray-800">
-              {stats.length > 0 ? Math.max(...stats.map(s => s.avg_score)).toFixed(1) : 0}%
-            </h2>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+             <h3 className="text-gray-500 text-sm">متوسط الأداء العام</h3>
+             <p className="text-3xl font-bold text-green-600">
+               {students.length > 0 
+                 ? Math.round(students.reduce((acc, curr) => acc + curr.average_score, 0) / students.length) + '%' 
+                 : '0%'}
+             </p>
           </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border-r-4 border-red-500">
-            <p className="text-gray-500 mb-1">طلاب بحاجة لدعم</p>
-            <h2 className="text-4xl font-bold text-gray-800">
-              {stats.filter(s => s.avg_score < 60).length}
-            </h2>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <h3 className="text-gray-500 text-sm">الاختبارات المنجزة</h3>
+            <p className="text-3xl font-bold text-purple-600">
+              {students.reduce((acc, curr) => acc + curr.quizzes_taken, 0)}
+            </p>
           </div>
         </div>
 
-        {/* --- الرسوم البيانية --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          
-          {/* رسم بياني 1: درجات الطلاب (أعمدة) */}
-          <div className="bg-white p-6 rounded-xl shadow-lg">
-            <h3 className="text-xl font-bold mb-6 text-gray-700">📊 تحليل درجات الطلاب</h3>
-            <div className="h-[300px] w-full" dir="ltr"> {/* dir=ltr مهم للرسوم البيانية */}
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={stats}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="student" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="avg_score" name="المعدل" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+        {/* جدول الطلاب */}
+        <div className="bg-white shadow-lg rounded-2xl overflow-hidden border border-gray-100">
+          <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
+            <h2 className="text-lg font-semibold text-gray-800">قائمة الطلاب</h2>
           </div>
-
-          {/* رسم بياني 2: جدول تفصيلي */}
-          <div className="bg-white p-6 rounded-xl shadow-lg overflow-hidden">
-            <h3 className="text-xl font-bold mb-6 text-gray-700">📋 سجل الطلاب</h3>
+          
+          {loading ? (
+            <div className="p-8 text-center text-gray-500">جاري تحميل البيانات...</div>
+          ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-right">
-                <thead className="bg-gray-50 text-gray-600 font-medium">
+                <thead className="bg-gray-50 text-gray-600 text-sm uppercase">
                   <tr>
-                    <th className="p-4 rounded-r-lg">الطالب</th>
-                    <th className="p-4">المعدل</th>
-                    <th className="p-4 rounded-l-lg">الحالة</th>
+                    <th className="px-6 py-4 font-medium">اسم الطالب</th>
+                    <th className="px-6 py-4 font-medium">البريد الإلكتروني</th>
+                    <th className="px-6 py-4 font-medium">عدد الاختبارات</th>
+                    <th className="px-6 py-4 font-medium">مستوى الأداء</th>
+                    <th className="px-6 py-4 font-medium">الحالة</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {stats.map((s, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                      <td className="p-4 font-bold text-gray-800">{s.student}</td>
-                      <td className="p-4 text-blue-600 font-bold">{s.avg_score.toFixed(1)}%</td>
-                      <td className="p-4">
-                        <span className={`px-3 py-1 rounded-full text-xs font-bold
-                          ${s.avg_score >= 80 ? 'bg-green-100 text-green-700' : 
-                            s.avg_score >= 60 ? 'bg-yellow-100 text-yellow-700' : 
-                            'bg-red-100 text-red-700'}`}>
-                          {s.avg_score >= 80 ? 'ممتاز' : s.avg_score >= 60 ? 'جيد' : 'ضعيف'}
+                  {students.map((student, index) => (
+                    <motion.tr 
+                      key={student.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.05 }}
+                      className="hover:bg-blue-50/30 transition-colors"
+                    >
+                      <td className="px-6 py-4 font-medium text-gray-900">{student.name}</td>
+                      <td className="px-6 py-4 text-gray-500">{student.email}</td>
+                      <td className="px-6 py-4 text-gray-900">{student.quizzes_taken}</td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full ${
+                                student.average_score >= 80 ? 'bg-green-500' :
+                                student.average_score >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+                              }`}
+                              style={{ width: `${student.average_score}%` }}
+                            />
+                          </div>
+                          <span className="text-sm font-medium">{student.average_score}%</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                          نشط
                         </span>
                       </td>
-                    </tr>
+                    </motion.tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
-
+          )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
