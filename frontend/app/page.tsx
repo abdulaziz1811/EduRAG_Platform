@@ -1,54 +1,58 @@
-import Link from "next/link";
+"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 
-export default function Home() {
+export default function StudentLoginPage() {
+  const [name, setName] = useState("");
+  const [chapter, setChapter] = useState("");
+  const router = useRouter();
+
+  const handleStart = () => {
+    if (name && chapter) {
+      localStorage.setItem("student_name", name);
+      localStorage.setItem("selected_chapter", chapter);
+      router.push("/quiz");
+    } else {
+      alert("يرجى إكمال البيانات المطلوبة");
+    }
+  };
+
   return (
-    <div className="min-h-[calc(100vh-64px)] flex flex-col items-center justify-center bg-gray-50 p-8" dir="rtl">
-      
-      {/* النصوص الترحيبية */}
-      <div className="text-center max-w-3xl mb-12">
-        <h1 className="text-6xl font-black text-gray-900 mb-6">
-          التعليم بمفهوم <span className="text-blue-600">راقٍ</span>
-        </h1>
-        <p className="text-xl text-gray-500 leading-relaxed">
-          منصة تعليمية ذكية تستخدم الذكاء الاصطناعي لتحليل نقاط ضعف الطلاب 
-          وتوليد اختبارات مخصصة من المناهج الدراسية مباشرة.
-        </p>
-      </div>
+    <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6 font-sans">
+      <motion.div initial={{scale:0.9, opacity:0}} animate={{scale:1, opacity:1}} className="max-w-md w-full bg-white rounded-[40px] p-10 shadow-2xl">
+        <div className="text-center mb-10">
+          <h1 className="text-3xl font-black text-slate-900 mb-4">منصة الرياضيات الذكية</h1>
+          <p className="text-blue-600 font-bold">مرحباً بك يا بطل في مادة الرياضيات للصف الثاني المتوسط</p>
+        </div>
 
-      {/* بطاقات الدخول */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl">
-        
-        {/* بطاقة الطالب */}
-        <Link href="/quiz" className="group">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 hover:shadow-xl hover:border-blue-300 transition-all cursor-pointer h-full text-center">
-            <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
-              🎓
-            </div>
-            <h2 className="text-2xl font-bold text-gray-800 mb-3">أنا طالب</h2>
-            <p className="text-gray-500">
-              اختبر مستواك في الرياضيات واحصل على تحليل فوري لنقاط ضعفك.
-            </p>
+        <div className="space-y-6 text-right">
+          <div>
+            <label className="block text-slate-700 font-bold mb-2">اسم الطالب:</label>
+            <input type="text" value={name} onChange={(e)=>setName(e.target.value)} placeholder="أدخل اسمك الثلاثي"
+              className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-slate-100 focus:border-blue-500 outline-none transition-all font-bold text-slate-800" />
           </div>
-        </Link>
 
-        {/* بطاقة المعلم */}
-        <Link href="/dashboard" className="group">
-          <div className="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 hover:shadow-xl hover:border-blue-300 transition-all cursor-pointer h-full text-center">
-            <div className="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
-              👨‍🏫
-            </div>
-            <h2 className="text-2xl font-bold text-gray-800 mb-3">أنا معلم</h2>
-            <p className="text-gray-500">
-              راقب أداء طلابك، واكتشف المفاهيم التي تحتاج لإعادة شرح.
-            </p>
+          <div>
+            <label className="block text-slate-700 font-bold mb-2">اختر فصل الاختبار:</label>
+            <select value={chapter} onChange={(e)=>setChapter(e.target.value)}
+              className="w-full p-4 rounded-2xl bg-slate-50 border-2 border-slate-100 focus:border-blue-500 outline-none font-bold text-slate-800">
+              <option value="">-- حدد الفصل --</option>
+              <option value="1">الفصل الأول: الكسور الاعتيادية</option>
+              <option value="2">الفصل الثاني: الضرب والقسمة</option>
+              <option value="3">الفصل الثالث: الهندسة والأشكال</option>
+              <option value="4">الفصل الرابع: القياس والوحدات</option>
+              <option value="5">الفصل الخامس: الجبر والعمليات</option>
+            </select>
           </div>
-        </Link>
 
-      </div>
-      
-      <div className="mt-16 text-gray-400 text-sm">
-        تم التطوير بواسطة عبد العزيز © 2026
-      </div>
+          <button onClick={handleStart} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-xl hover:bg-blue-700 shadow-lg shadow-blue-100 transition-all active:scale-95">
+            بدء الاختبار التفاعلي
+          </button>
+        </div>
+
+        <p className="text-center text-slate-400 text-xs mt-8 font-medium">نظام EduRAG التعليمي المطور</p>
+      </motion.div>
     </div>
   );
 }
