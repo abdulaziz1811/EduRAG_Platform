@@ -1,195 +1,89 @@
-import os
-import sqlite3
-import json
-import pickle
-import faiss
-import numpy as np
+import os, sqlite3, pickle, faiss, numpy as np
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 from dotenv import load_dotenv
 
-# --- إعداد المسارات وبيئة العمل ---
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) # مجلد app
-BACKEND_DIR = os.path.dirname(CURRENT_DIR) # مجلد backend الرئيسي
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "edurag.db")
+RAG_DATA_DIR = os.path.join(BASE_DIR, "rag_data")
 
-# تحميل ملف .env من مجلد backend
-load_dotenv(os.path.join(BACKEND_DIR, ".env"))
+load_dotenv()
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-RAG_DIR = os.path.join(BACKEND_DIR, "rag_data")
-DB_PATH = os.path.join(BACKEND_DIR, "edurag.db")
-
-# --- إعداد Groq API ---
-API_KEY = os.getenv("GROQ_API_KEY")
-
-if not API_KEY:
-    # ملاحظة: إذا استمر الخطأ يمكنك وضع المفتاح يدوياً هنا للتجربة: API_KEY = "gsk_..."
-    print("⚠️ تحذير: لم يتم العثور على GROQ_API_KEY في ملف .env")
-
-client = Groq(api_key=API_KEY)
-
-# --- متغيرات RAG العالمية ---
-index = None
-chunks = []
-embedder = None
-
-def load_rag_models():
-    """تحميل نماذج البحث (Embedding + FAISS) مرة واحدة عند التشغيل"""
-    global index, chunks, embedder
-    try:
-        print("⏳ جاري تحميل نموذج التضمين (SentenceTransformer)...")
-        embedder = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-        
-        index_path = os.path.join(RAG_DIR, "index.faiss")
-        chunks_path = os.path.join(RAG_DIR, "chunks.pkl")
-        
-        if os.path.exists(index_path) and os.path.exists(chunks_path):
-            print("📚 تحميل الفهرس وقاعدة البيانات المتجهة...")
-            index = faiss.read_index(index_path)
-            with open(chunks_path, "rb") as f:
-                chunks = pickle.load(f)
-            print("✅ تم تحميل نظام RAG بنجاح!")
-        else:
-            print("⚠️ تحذير: ملفات الفهرس (FAISS/Pickle) غير موجودة.")
-    except Exception as e:
-        print(f"❌ خطأ أثناء تحميل النماذج: {e}")
-
-# تحميل النماذج عند استيراد الملف
-load_rag_models()
-
-# ----------------------------- دوال قاعدة البيانات ----------------------------- #
-
-def get_db_connection():
+def get_rag_analysis(class_name: str):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
-
-# ----------------------------- دوال البحث والتوليد (Core Logic) ----------------------------- #
-
-def get_relevant_context(query, k=3):
-    """البحث عن النصوص ذات الصلة في الكتاب"""
-    global index, chunks, embedder
-    if index is None or embedder is None:
-        return ""
-    try:
-        query_vector = embedder.encode([query])
-        distances, indices = index.search(query_vector, k)
-        results = []
-        for idx in indices[0]:
-            if 0 <= idx < len(chunks):
-                text = chunks[idx].get('content', '')
-                page = chunks[idx].get('page_number', '?')
-                results.append(f"[صفحة {page}]: {text}")
-        return "\n\n".join(results)
-    except Exception as e:
-        print(f"Error in RAG search: {e}")
-        return ""
-
-def get_rag_response(prompt: str):
-    """
-    الدالة الرئيسية لتوليد الإجابات باستخدام Groq مع سياق الـ RAG
-    (تم تسميتها get_rag_response لتطابق استدعاء main.py)
-    """
-    context = get_relevant_context(prompt)
-    try:
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": f"أنت مساعد تعليمي ذكي. استخدم السياق المستخرج من الكتاب الدراسي للإجابة: {context}"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.5
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"❌ خطأ في الاتصال بـ Groq: {str(e)}"
-
-def generate_summary_logic():
-    """المنطق الخاص بزر 'اصنع ملخص' - تحليل الطلاب والمفاهيم"""
-    conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. جلب الطلاب المتعثرين (متوسط درجاتهم أقل من 50)
-    cursor.execute("""
-        SELECT u.name FROM users u 
-        JOIN scores s ON u.id = s.user_id 
-        GROUP BY u.id HAVING AVG(s.score) < 50
-    """)
-    low_students = ", ".join([r['name'] for r in cursor.fetchall()])
+    # 1. إحصائيات الفصل العامة لضمان عدم نسيان بقية الطلاب
+    cursor.execute("SELECT AVG(total_score) as avg, COUNT(*) as total FROM student_stats WHERE class_name = ?", (class_name,))
+    class_info = cursor.fetchone()
+    class_avg = class_info['avg'] or 0
+    total_students = class_info['total']
 
-    # 2. جلب المفاهيم الصعبة (التي رسب فيها 40% من الطلاب أو أكثر)
+    # 2. تحديد أضعف مهارة في الفصل وتحديد الأسماء المتعثرة جداً
     cursor.execute("""
-        SELECT concept FROM scores 
-        GROUP BY concept 
-        HAVING (SUM(CASE WHEN score < 50 THEN 1 ELSE 0 END) * 1.0 / COUNT(*)) >= 0.4
-    """)
-    hard_concepts = ", ".join([r['concept'] for r in cursor.fetchall()])
+        SELECT c.concept, AVG(c.score) as concept_avg 
+        FROM concept_stats c JOIN student_stats s ON c.student_id = s.id
+        WHERE s.class_name = ? GROUP BY c.concept ORDER BY concept_avg ASC LIMIT 1
+    """, (class_name,))
+    weak_row = cursor.fetchone()
+    
+    if not weak_row: return "البيانات غير كافية حالياً."
+    
+    weak_concept = weak_row['concept']
+    
+    cursor.execute("""
+        SELECT s.name, c.score 
+        FROM concept_stats c JOIN student_stats s ON c.student_id = s.id
+        WHERE s.class_name = ? AND c.concept = ? AND c.score < 45
+        ORDER BY c.score ASC LIMIT 3
+    """, (class_name, weak_concept))
+    struggling = cursor.fetchall()
     conn.close()
 
-    # 3. صياغة التقرير باستخدام الـ LLM
-    prompt = f"""
-    بصفتك مساعد تعليمي خبير، قم بكتابة تقرير موجز للمعلم بناءً على النتائج التالية المستخلصة من قاعدة البيانات:
-    - الطلاب الذين يحتاجون لتدخل عاجل: {low_students if low_students else "لا يوجد طلاب في منطقة الخطر حالياً"}
-    - المفاهيم الدراسية التي تعثر بها أكثر من 40% من الطلاب: {hard_concepts if hard_concepts else "جميع المفاهيم تم استيعابها بشكل جيد"}
-    
-    اكتب التقرير بأسلوب مهني، مباشر، وباللغة العربية الفصحى. اقترح نصيحة سريعة للمعلم لكيفية معالجة هذه الفجوات.
-    """
-    return get_rag_response(prompt)
-
-def get_stats_logic():
-    """جلب الأرقام الحقيقية للمربعات العلوية في Dashboard"""
+    # 3. استرجاع السياق المنهجي (RAG)
+    context = ""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # إجمالي الطلاب
-        total_students = cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'student'").fetchone()[0]
-        
-        # متوسط الدرجات
-        avg_score = cursor.execute("SELECT AVG(score) FROM scores").fetchone()[0] or 0
-        
-        # طلاب في خطر (متوسطهم < 50)
-        risk_count = cursor.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT user_id FROM scores GROUP BY user_id HAVING AVG(score) < 50
-            )
-        """).fetchone()[0]
-        
-        # عدد الاختبارات (المفاهيم الفريدة)
-        total_quizzes = cursor.execute("SELECT COUNT(DISTINCT concept) FROM scores").fetchone()[0]
-        
-        conn.close()
-        return {
-            "avg_score": f"{round(avg_score)}%",
-            "risk_students": risk_count,
-            "total_students": total_students,
-            "total_quizzes": total_quizzes
-        }
-    except Exception as e:
-        print(f"Error in stats: {e}")
-        return {"avg_score": "0%", "risk_students": 0, "total_students": 0, "total_quizzes": 0}
+        index = faiss.read_index(os.path.join(RAG_DATA_DIR, "index.faiss"))
+        with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
+            chunks = pickle.load(f)
+        query_vector = embedding_model.encode([f"معالجة ضعف الطلاب في مهارة {weak_concept}"])
+        indices = index.search(np.array([query_vector]).astype('float32'), k=1)[1]
+        context = chunks[indices[0][0]] if len(indices[0]) > 0 else ""
+    except: pass
 
-def generate_quiz(topic: str, num_q=5):
-    """توليد اختبار JSON نقي بناءً على الـ RAG"""
-    context_text = get_relevant_context(topic)
-    prompt = f"""
-    أنشئ اختباراً تعليمياً بصيغة JSON مكون من {num_q} أسئلة عن موضوع: {topic}.
-    استخدم السياق التالي كمصدر وحيد للمعلومات: {context_text}
+    # 4. التوليد باستخدام الموديل الجديد Llama-3.3
+    students_names = ", ".join([r['name'] for r in struggling])
     
-    يجب أن يكون الرد عبارة عن JSON Array فقط يحتوي على:
-    - question: نص السؤال
-    - options: مصفوفة من 4 خيارات
-    - answer: الخيار الصحيح مطابق تماماً لأحد الخيارات.
+    system_prompt = "أنت مستشار أكاديمي خبير. ردك باللغة العربية، تقني، مباشر، ومختصر جداً في نقاط."
+
+    user_prompt = f"""
+    حلل المستجدات لـ {class_name}:
+    - حالة الفصل: متوسط الإتقان {class_avg:.1f}% لـ {total_students} طالب.
+    - الفجوة الكبرى: مهارة "{weak_concept}".
+    - الحالات الحرجة: {students_names}.
+    - المرجع التعليمي: {context[:150]}...
+
+    المطلوب في 3 نقاط مركزة:
+    1. (ملخص الفصل): تقييم عام لأداء القاعة وتحديد المهارة التي تستوجب مراجعة جماعية.
+    2. (التشخيص): الربط المنطقي لتعثر {students_names} في "{weak_concept}".
+    3. (الإجراء): نشاط علاجي سريع (5 دقائق) يطبق غداً لترميم الفجوة.
+
+    * تنبيه: لا تزد عن 70 كلمة. ممنوع الإنجليزية. ابدأ بكلمة "التقرير:".
     """
+
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+        response = groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are a specialized API that returns only raw JSON arrays."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            response_format={"type": "json_object"}
+            model="llama-3.3-70b-versatile", # الموديل الجديد والمدعوم
+            temperature=0.2,
+            max_tokens=400
         )
-        return json.loads(response.choices[0].message.content)
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"❌ Error generating quiz: {e}")
-        return []
+        return f"حدث خطأ في الاتصال بالموديل: {str(e)}"
