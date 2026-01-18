@@ -2,3 +2,4 @@ __pycache__/
 *.DS_Store
 .env
 edurag.db # اختياري: إذا تبي قاعدة البيانات تكون محلية فقط
+node_modules/
