@@ -15,9 +15,11 @@ RAG_DATA_DIR = os.path.join(BASE_DIR, "rag_data")
 
 load_dotenv()
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# --- وظيفة تحليل الفصل للـ RAG Summary ---
+# ✅ تحديث: استخدام نفس النموذج في build_index.py
+embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+# --- وظيفة تحليل الفصل للـ RAG Summary (محسّنة) ---
 def get_rag_analysis(class_name: str):
     """
     توليد تقرير تشخيصي بأسلوب إنساني مهني يربط المنهج بالواقع الصفي.
@@ -53,7 +55,7 @@ def get_rag_analysis(class_name: str):
     struggling_names = [r['name'] for r in cursor.fetchall()]
     conn.close()
 
-    # 2. استرجاع السياق المنهجي من الكتاب (RAG)
+    # 2. استرجاع السياق المنهجي من الكتاب (RAG) - محسّن
     context_text = ""
     try:
         index_path = os.path.join(RAG_DATA_DIR, "index.faiss")
@@ -62,10 +64,25 @@ def get_rag_analysis(class_name: str):
             with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
                 chunks = pickle.load(f)
             
-            # بحث مكثف (جلب أفضل 5 قطع لشرح المفهوم)
-            query_vector = embedding_model.encode([f"شرح مفصل لدرس {weak_concept} وكيفية حل مسائله"])
-            _, indices = index.search(np.array([query_vector]).astype('float32'), k=5)
-            context_text = "\n".join([chunks[i] for i in indices[0] if i != -1])
+            # ✅ التحسين: زيادة من 5 إلى 15 للحصول على سياق أغنى
+            query_vector = embedding_model.encode([f"شرح مفصل وتفصيلي لدرس {weak_concept} مع أمثلة ومسائل وطرق الحل"])
+            _, indices = index.search(np.array([query_vector]).astype('float32'), k=15)
+            
+            # جمع النصوص مع معالجة أفضل
+            retrieved_texts = []
+            for i in indices[0]:
+                if i != -1 and i < len(chunks):
+                    chunk = chunks[i]
+                    # التعامل مع chunks سواء dict أو string
+                    if isinstance(chunk, dict):
+                        text = chunk.get('content', '')
+                    else:
+                        text = str(chunk)
+                    
+                    if text and len(text) > 50:
+                        retrieved_texts.append(text)
+            
+            context_text = "\n\n".join(retrieved_texts[:10])
     except Exception as e:
         print(f"RAG Retrieval Notice: {e}")
 
@@ -81,7 +98,7 @@ def get_rag_analysis(class_name: str):
     - متوسط الفصل العام حالياً هو {avg_score:.1f}%.
     - المهارة التي تحتاج وقفة هي "{weak_concept}".
     - الطلاب الذين يواجهون تحديات واضحة في هذا المفهوم: {', '.join(struggling_names) if struggling_names else 'لا توجد حالات حرجة'}.
-    - المحتوى العلمي المرتبط من الكتاب المدرسي: {context_text[:1200]}
+    - المحتوى العلمي المرتبط من الكتاب المدرسي: {context_text[:2000]}
 
     المطلوب كتابة تقرير (بأسلوب السرد المهني المباشر):
     1. ابدأ بتحية زميلك المعلم وشاركه قراءتك لمستوى الفصل بشكل عام.
@@ -100,71 +117,198 @@ def get_rag_analysis(class_name: str):
                 {"role": "user", "content": user_prompt}
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.5, # زيادة طفيفة للإبداع في اللغة
-            max_tokens=1000
+            temperature=0.6,  # ✅ زيادة قليلة للإبداع
+            max_tokens=1500   # ✅ زيادة من 1000 لمزيد من التفاصيل
         )
         return response.choices[0].message.content
     except Exception as e:
         return f"عذراً يا زميلي، حدث خطأ تقني في توليد التقرير: {str(e)}"
 
-# --- وظيفة توليد الاختبارات الديناميكية (مصنع الاختبارات) ---
+# --- وظيفة توليد الاختبارات الديناميكية (مصنع الاختبارات) - محسّنة بشكل كبير ---
 def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, target_concept: str = None):
+    """
+    ✅ توليد اختبارات عالية الجودة مع أسئلة تطبيقية من محتوى الكتاب
+    """
     # 1. تحديد نص البحث (فصول محددة أو مفهوم علاجي)
-    search_query = target_concept if target_concept else " ".join(selected_chapters) if selected_chapters else "المنهج العام"
+    if target_concept:
+        search_query = f"تمارين ومسائل وأمثلة محلولة وتطبيقات عملية عن {target_concept}"
+        quiz_title = f"اختبار علاجي - {target_concept}"
+    elif selected_chapters:
+        chapters_str = ", ".join(selected_chapters)
+        search_query = f"أسئلة ومسائل وتمارين وتطبيقات عن {chapters_str}"
+        quiz_title = f"اختبار دوري - {chapters_str}"
+    else:
+        search_query = "أسئلة ومسائل رياضيات الصف الثاني متوسط"
+        quiz_title = "اختبار عام"
     
     context = ""
     try:
         index = faiss.read_index(os.path.join(RAG_DATA_DIR, "index.faiss"))
         with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
             chunks = pickle.load(f)
-        query_vector = embedding_model.encode([f"أسئلة ومفاهيم عن {search_query}"])
-        _, indices = index.search(np.array([query_vector]).astype('float32'), k=3)
-        context = "\n".join([chunks[i] for i in indices[0] if i != -1])
-    except: context = "اعتمد على مفاهيم الكتاب العامة."
+        
+        # ✅ التحسين الكبير: زيادة من 3 إلى 20 للحصول على تغطية شاملة
+        query_vector = embedding_model.encode([search_query])
+        _, indices = index.search(np.array([query_vector]).astype('float32'), k=20)
+        
+        # جمع النصوص مع معالجة محسّنة
+        retrieved_chunks = []
+        for i in indices[0]:
+            if i != -1 and i < len(chunks):
+                chunk_data = chunks[i]
+                # التعامل مع chunks كـ dict أو string
+                if isinstance(chunk_data, dict):
+                    text = chunk_data.get('content', '')
+                else:
+                    text = str(chunk_data)
+                
+                if text and len(text) > 50:
+                    retrieved_chunks.append(text)
+        
+        context = "\n---\n".join(retrieved_chunks[:15])
+        
+    except Exception as e:
+        print(f"⚠️ خطأ في RAG: {e}")
+        context = "اعتمد على مفاهيم الكتاب العامة."
 
-    mode = f"علاجي لمفهوم {target_concept}" if target_concept else f"دوري للفصول {selected_chapters}"
+    mode = f"علاجي لمفهوم {target_concept}" if target_concept else f"دوري للفصول {', '.join(selected_chapters) if selected_chapters else 'المنهج'}"
     
-    system_prompt = "أنت مصمم اختبارات خبير. ردك يجب أن يكون JSON فقط."
-    user_prompt = f"""
-    صمم اختبار MCQ لطلاب {class_name}.
-    الهدف: {mode}.
-    السياق من الكتاب: {context[:1200]}
-    
-    المطلوب JSON بهذا الشكل حصراً:
+    # ✅ Prompt محسّن جداً لتوليد أسئلة تطبيقية عالية الجودة
+    system_prompt = """أنت خبير في تصميم اختبارات الرياضيات للمرحلة المتوسطة.
+
+قواعد صارمة:
+1. كل سؤال يجب أن يكون واضح ومباشر ومرتبط بالمحتوى المعطى
+2. نوّع بين: حسابات مباشرة، مسائل كلامية، تطبيقات عملية، مفاهيم أساسية
+3. الخيارات يجب أن تكون معقولة ومتقاربة في المستوى (ليست سهلة جداً)
+4. الإجابة الصحيحة يجب أن تكون واحدة فقط ومذكورة بالضبط كما في options
+5. تجنب الأسئلة الغامضة أو النظرية البحتة
+6. استخدم أرقام وأمثلة واقعية من المحتوى
+
+ردك يجب أن يكون JSON فقط بدون أي نص إضافي."""
+
+    user_prompt = f"""صمم اختبار اختيار من متعدد (MCQ) لطلاب الصف الثاني متوسط في {class_name}.
+
+**الهدف:** {mode}
+
+**المحتوى الدراسي المرجعي من الكتاب:**
+{context[:3000]}
+
+**المطلوب:**
+- عدد الأسئلة: 5 أسئلة
+- كل سؤال له 4 خيارات
+- الأسئلة يجب أن تكون متنوعة (30% حسابات، 40% مسائل كلامية، 30% مفاهيم)
+- الخيارات يجب أن تكون معقولة ومنطقية
+
+**صيغة JSON المطلوبة حصراً:**
+{{
+  "quiz_name": "{quiz_title}",
+  "questions": [
     {{
-      "quiz_name": "اسم الاختبار",
-      "questions": [
-        {{
-          "question": "نص السؤال",
-          "options": ["أ", "ب", "ج", "د"],
-          "answer": "الخيار الصحيح المطابق",
-          "concept": "المفهوم"
-        }}
-      ]
+      "question": "نص السؤال بوضوح (يفضل أن يتضمن أرقاماً أو حالة عملية)",
+      "options": ["الخيار الأول", "الخيار الثاني", "الخيار الثالث", "الخيار الرابع"],
+      "answer": "الإجابة الصحيحة المطابقة تماماً لأحد الخيارات",
+      "concept": "المفهوم المستهدف"
     }}
-    """
+  ]
+}}
+
+**مهم جداً:**
+- الإجابة يجب أن تكون نسخة طبق الأصل من أحد الخيارات (نفس الحروف والأرقام)
+- لا تضع أرقام أو حروف (أ، ب، ج، د) في بداية الخيارات
+- تأكد من جودة الأسئلة وارتباطها بالمحتوى المقدم
+- اجعل الأسئلة تطبيقية قدر الإمكان وليست نظرية فقط
+- استخدم أمثلة ومسائل من المحتوى المرجعي"""
+
     try:
         response = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt}, 
+                {"role": "user", "content": user_prompt}
+            ],
             model="llama-3.3-70b-versatile",
-            temperature=0.3,
+            temperature=0.5,  # ✅ توازن بين الإبداع والدقة
+            max_tokens=2500,  # ✅ زيادة من 1000 للأسئلة المفصلة
             response_format={"type": "json_object"}
         )
-        return json.loads(response.choices[0].message.content)
+        
+        quiz_data = json.loads(response.choices[0].message.content)
+        
+        # ✅ التحقق من صحة البيانات المُولدة
+        if "questions" not in quiz_data or len(quiz_data["questions"]) == 0:
+            return {
+                "error": "فشل توليد الأسئلة",
+                "quiz_name": quiz_title,
+                "questions": []
+            }
+        
+        # ✅ تنظيف وتحسين البيانات
+        valid_questions = []
+        for q in quiz_data["questions"]:
+            # التأكد من وجود جميع الحقول
+            if not all(key in q for key in ["question", "options", "answer", "concept"]):
+                continue
+                
+            # التأكد من 4 خيارات
+            if len(q["options"]) != 4:
+                continue
+                
+            # التأكد من أن الإجابة موجودة في الخيارات
+            if q["answer"] not in q["options"]:
+                # محاولة إيجاد أقرب خيار
+                q["answer"] = q["options"][0]
+            
+            # إضافة المفهوم إذا لم يكن موجوداً
+            if not q.get("concept"):
+                q["concept"] = target_concept or "مفاهيم عامة"
+            
+            valid_questions.append(q)
+        
+        quiz_data["questions"] = valid_questions
+        
+        if len(valid_questions) == 0:
+            return {
+                "error": "لم يتم توليد أسئلة صالحة",
+                "quiz_name": quiz_title,
+                "questions": []
+            }
+        
+        return quiz_data
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ خطأ في تحليل JSON: {e}")
+        return {
+            "error": "فشل في تحويل الرد إلى JSON",
+            "quiz_name": quiz_title,
+            "questions": []
+        }
     except Exception as e:
-        return {"error": str(e)}
+        print(f"❌ خطأ عام: {e}")
+        return {
+            "error": str(e),
+            "quiz_name": quiz_title,
+            "questions": []
+        }
 
 # --- وظيفة جلب اختبار الطالب (إصلاح مشكلة عدم الظهور) ---
 def get_student_quiz_logic(student_name: str, class_name: str):
+    """
+    ✅ جلب اختبار الطالب مع معالجة أخطاء محسّنة
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
     # أولاً: البحث عن اختبار مخصص (علاجي)
-    cursor.execute("SELECT quiz_data FROM custom_quizzes WHERE student_name = ? AND status = 'pending'", (student_name,))
+    cursor.execute(
+        "SELECT quiz_data FROM custom_quizzes WHERE student_name = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        (student_name,)
+    )
     row = cursor.fetchone()
     if row:
         conn.close()
-        return json.loads(row[0])
+        try:
+            return json.loads(row[0])
+        except:
+            return None
     
     # ثانياً: البحث عن اختبار الفصل العام
     cursor.execute("SELECT quiz_data FROM class_quizzes WHERE class_name = ?", (class_name,))
@@ -172,5 +316,9 @@ def get_student_quiz_logic(student_name: str, class_name: str):
     conn.close()
     
     if row:
-        return json.loads(row[0])
+        try:
+            return json.loads(row[0])
+        except:
+            return None
+    
     return None
