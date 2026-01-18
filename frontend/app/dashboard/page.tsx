@@ -6,37 +6,89 @@ import Navbar from "../../components/Navbar";
 
 export default function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState("overview");
-  const [selectedClass, setSelectedClass] = useState("فصل (أ)"); // الميزة الجديدة
+  const [selectedClass, setSelectedClass] = useState("فصل (أ)");
+  
+  // حالات البيانات والتحليلات
   const [stats, setStats] = useState({ avg_score: 0, students_at_risk: 0, total_students: 0, total_quizzes: 0 });
-  const [students, setStudents] = useState([]);
+  const [students, setStudents] = useState<any[]>([]);
   const [selectedStudent, setSelectedStudent] = useState("");
-  const [studentPerf, setStudentPerf] = useState([]);
-  const [chaptersAvg, setChaptersAvg] = useState([]);
-  const [classCompare, setClassCompare] = useState([]);
-  const [chapterDetails, setChapterDetails] = useState([]);
+  const [studentPerf, setStudentPerf] = useState<any[]>([]);
+  const [chaptersAvg, setChaptersAvg] = useState<any[]>([]);
+  const [classCompare, setClassCompare] = useState<any[]>([]);
+  const [chapterDetails, setChapterDetails] = useState<any[]>([]);
   const [selectedChapter, setSelectedChapter] = useState("1");
   const [summary, setSummary] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // جلب البيانات بناءً على الفصل المختار
+  // حالات مصنع الاختبارات (الميزة المحدثة)
+  const [selectedChapters, setSelectedChapters] = useState<string[]>([]);
+  const [strugglingStudents, setStrugglingStudents] = useState<any[]>([]);
+  const [factoryLoading, setFactoryLoading] = useState(false);
+
+  // إدارة اختيار الفصول في المصنع
+  const toggleChapterSelection = (chap: string) => {
+    setSelectedChapters(prev => 
+      prev.includes(chap) ? prev.filter(c => c !== chap) : [...prev, chap]
+    );
+  };
+
+  // جلب البيانات عند تغيير الفصل الدراسي
   useEffect(() => {
     const query = `?class_name=${encodeURIComponent(selectedClass)}`;
-    fetch(`http://127.0.0.1:8000/teacher/stats${query}`).then(res => res.json()).then(setStats);
-    fetch(`http://127.0.0.1:8000/teacher/students${query}`).then(res => res.json()).then(setStudents);
-    fetch(`http://127.0.0.1:8000/teacher/analytics/chapters-avg${query}`).then(res => res.json()).then(setChaptersAvg);
-    fetch(`http://127.0.0.1:8000/teacher/analytics/classes-compare`).then(res => res.json()).then(setClassCompare);
+    
+    fetch(`http://127.0.0.1:8000/teacher/stats${query}`).then(res => res.json()).then(data => setStats(data || {}));
+    fetch(`http://127.0.0.1:8000/teacher/students${query}`).then(res => res.json()).then(data => setStudents(Array.isArray(data) ? data : []));
+    fetch(`http://127.0.0.1:8000/teacher/analytics/chapters-avg${query}`).then(res => res.json()).then(data => setChaptersAvg(Array.isArray(data) ? data : []));
+    fetch(`http://127.0.0.1:8000/teacher/analytics/classes-compare`).then(res => res.json()).then(data => setClassCompare(Array.isArray(data) ? data : []));
+    
+    // جلب المتعثرين حسب المفاهيم (للمصنع)
+    fetch(`http://127.0.0.1:8000/api/analytics/struggling${query}`).then(res => res.json()).then(data => setStrugglingStudents(Array.isArray(data) ? data : []));
+    
     loadChapterDetails(selectedChapter, selectedClass);
   }, [selectedClass]);
 
   const loadChapterDetails = (num: string, className: string) => {
     setSelectedChapter(num);
     fetch(`http://127.0.0.1:8000/teacher/analytics/chapter-details/${num}?class_name=${encodeURIComponent(className)}`)
-      .then(res => res.json()).then(setChapterDetails);
+      .then(res => res.json()).then(data => setChapterDetails(Array.isArray(data) ? data : []));
   };
 
   const handleStudentSelect = (id: string) => {
     setSelectedStudent(id);
-    if(id) fetch(`http://127.0.0.1:8000/teacher/student/${id}/performance`).then(res => res.json()).then(setStudentPerf);
+    if(id) {
+        fetch(`http://127.0.0.1:8000/teacher/student/${id}/performance`)
+        .then(res => res.json())
+        .then(data => setStudentPerf(Array.isArray(data) ? data : []));
+    }
+  };
+
+  // توليد اختبار للفصل بناءً على فصول مختارة (من المصنع)
+  const generateClassQuiz = async () => {
+    if (selectedChapters.length === 0) return alert("يرجى تحديد الفصول من المنهج أولاً");
+    setFactoryLoading(true);
+    try {
+        const res = await fetch("http://127.0.0.1:8000/api/quiz/generate-and-assign", {
+            method:'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ class_name: selectedClass, chapters: selectedChapters })
+        });
+        const data = await res.json();
+        alert("تم إنشاء الاختبار ونشره بنجاح لجميع طلاب الفصل");
+    } catch(e) { alert("حدث خطأ في الاتصال بالسيرفر"); }
+    setFactoryLoading(false);
+  };
+
+  // إرسال اختبار دعم مخصص لطالب محدد
+  const sendRemedialQuiz = async (studentName: string, concept: string) => {
+    alert(`جاري إعداد اختبار دعم مخصص في مفهوم: ${concept}`);
+    try {
+        await fetch("http://127.0.0.1:8000/api/quiz/generate-and-assign", {
+            method:'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ class_name: selectedClass, student_name: studentName, concept: concept })
+        });
+        alert("تم إرسال الاختبار العلاجي بنجاح");
+    } catch(e) { alert("فشل إرسال الاختبار"); }
   };
 
   const generateRAGReport = () => {
@@ -46,43 +98,38 @@ export default function TeacherDashboard() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ class_name: selectedClass })
     })
-    .then(res=>res.json())
-    .then(d=>{
+    .then(res=>res.json()).then(d=>{
         setSummary(d.summary);
         setIsGenerating(false);
     });
   };
 
   return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans" dir="rtl">
+    <div className="min-h-screen bg-[#f8fafc] text-slate-900 font-sans" dir="rtl">
       <Navbar />
       
       <div className="p-8 max-w-7xl mx-auto">
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
             <div>
-                <h1 className="text-3xl font-black border-r-4 border-blue-600 pr-4">لوحة تحكم المعلم</h1>
-                <p className="text-slate-500 mt-2 pr-4 font-medium">متابعة أداء الطلاب وتحليل الـ RAG</p>
+                <h1 className="text-3xl font-black border-r-8 border-blue-600 pr-4">لوحة تحكم المعلم</h1>
+                <p className="text-slate-500 mt-2 pr-4 font-bold text-lg italic">متابعة أداء الطلاب وتحليل المحتوى التعليمي</p>
             </div>
             
-            {/* الميزة الجديدة: محول الفصول */}
-            <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200">
+            <div className="flex bg-white p-2 rounded-3xl shadow-sm border border-slate-200">
                 {["فصل (أ)", "فصل (ب)"].map((cls) => (
-                    <button 
-                        key={cls}
-                        onClick={() => setSelectedClass(cls)}
-                        className={`px-6 py-2 rounded-xl font-bold transition-all ${selectedClass === cls ? "bg-white text-blue-600 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-                    >
+                    <button key={cls} onClick={() => setSelectedClass(cls)}
+                        className={`px-8 py-2.5 rounded-2xl font-black transition-all ${selectedClass === cls ? "bg-blue-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-600"}`}>
                         {cls}
                     </button>
                 ))}
             </div>
         </header>
 
-        {/* التبويبات الرئيسية */}
-        <div className="flex gap-4 mb-10 bg-slate-100 p-1.5 rounded-2xl w-fit">
+        {/* التبويبات بدون إيموجيات */}
+        <div className="flex gap-6 mb-12 bg-slate-200/50 p-2 rounded-[2rem] w-fit mx-auto">
           {["overview", "analysis", "factory"].map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)} 
-              className={`px-10 py-2.5 rounded-xl font-bold transition-all ${activeTab === tab ? "bg-white text-blue-600 shadow-md" : "text-slate-500"}`}>
+              className={`px-12 py-3 rounded-3xl font-black text-lg transition-all ${activeTab === tab ? "bg-white text-blue-600 shadow-xl scale-105" : "text-slate-500"}`}>
               {tab === "overview" ? "نظرة عامة" : tab === "analysis" ? "التحليل البياني" : "مصنع الاختبارات"}
             </button>
           ))}
@@ -90,105 +137,84 @@ export default function TeacherDashboard() {
 
         <AnimatePresence mode="wait">
           {activeTab === "overview" && (
-            <motion.div initial={{opacity:0, y:10}} animate={{opacity:1, y:0}} exit={{opacity:0}} className="space-y-10">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <StatCard label={`متوسط ${selectedClass}`} value={`${stats.avg_score}%`} color="text-blue-600" />
-                <StatCard label="طلاب في حالة حرجة" value={stats.students_at_risk} color="text-red-600" />
-                <StatCard label="طلاب الفصل" value={stats.total_students} color="text-slate-800" />
-                <StatCard label="فصول المنهج" value={stats.total_quizzes} color="text-purple-600" />
+            <motion.div key="overview" initial={{opacity:0, y:20}} animate={{opacity:1, y:0}} exit={{opacity:0}} className="space-y-10">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+                <StatCard label={`متوسط ${selectedClass}`} value={`${stats.avg_score || 0}%`} color="text-blue-600" />
+                <StatCard label="حالات حرجة" value={stats.students_at_risk || 0} color="text-red-600" />
+                <StatCard label="طلاب الفصل" value={stats.total_students || 0} color="text-slate-800" />
+                <StatCard label="دروس منتهية" value={stats.total_quizzes || 0} color="text-purple-600" />
               </div>
               
-              <div className="bg-slate-900 text-white p-10 rounded-[40px] shadow-2xl relative overflow-hidden">
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white p-12 rounded-[50px] shadow-2xl relative overflow-hidden border border-slate-700">
                 <div className="relative z-10">
-                    <h2 className="text-2xl font-bold mb-4 text-blue-400">تحليل RAG الذكي - {selectedClass}</h2>
-                    <p className="text-slate-400 mb-8 max-w-2xl text-lg">يقوم النظام بتحليل درجات طلاب {selectedClass} وربطها بمحتوى الكتاب لتقديم خطة علاجية مختصرة.</p>
-                    <button 
-                        onClick={generateRAGReport}
-                        disabled={isGenerating}
-                        className={`bg-blue-600 px-12 py-4 rounded-2xl font-bold hover:bg-blue-500 transition-all shadow-lg ${isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}>
-                        {isGenerating ? "جاري التحليل..." : "توليد ملخص المستجدات (RAG)"}
+                    <h2 className="text-3xl font-black mb-4 text-blue-400">تحليل المحتوى الذكي المنهجي</h2>
+                    <p className="text-slate-300 mb-8 max-w-3xl text-xl font-medium leading-relaxed">يقوم النظام بربط الفجوات التعليمية لدى الطلاب بقطع الشرح المستخرجة من الكتاب المدرسي لتقديم توصيات علاجية دقيقة.</p>
+                    <button onClick={generateRAGReport} disabled={isGenerating}
+                        className={`bg-blue-600 px-16 py-5 rounded-[2rem] font-black text-xl hover:bg-blue-500 transition-all shadow-2xl shadow-blue-500/40 ${isGenerating ? 'opacity-50' : ''}`}>
+                        {isGenerating ? "جاري الاسترجاع والتحليل..." : "توليد ملخص المستجدات"}
                     </button>
-                    
-                    {summary && (
-                        <motion.div initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="mt-8 p-8 bg-slate-800 rounded-3xl text-xl leading-relaxed border-r-8 border-blue-500 shadow-inner">
-                            {summary}
-                        </motion.div>
-                    )}
+                    {summary && <motion.div initial={{opacity:0}} animate={{opacity:1}} className="mt-10 p-10 bg-white/5 backdrop-blur-md rounded-[3rem] text-2xl border-r-8 border-blue-500 font-bold">{summary}</motion.div>}
                 </div>
-                <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
               </div>
             </motion.div>
           )}
 
           {activeTab === "analysis" && (
-            <motion.div initial={{opacity:0}} animate={{opacity:1}} className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-              
-              <div className="bg-slate-50 p-8 rounded-[32px] border border-slate-200">
-                <h3 className="text-lg font-black mb-6 text-slate-700">اتقان المهارات في {selectedClass}</h3>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chaptersAvg}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="name" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip />
-                      <Area type="monotone" dataKey="score" stroke="#2563eb" fill="#dbeafe" strokeWidth={4} />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="bg-slate-50 p-8 rounded-[32px] border border-slate-200">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-lg font-black text-slate-700">درجات الطلاب:</h3>
-                  <select value={selectedChapter} onChange={(e) => loadChapterDetails(e.target.value, selectedClass)} className="p-2 bg-white rounded-lg border font-bold outline-none">
-                    {[1,2,3,4,5].map(n => <option key={n} value={n}>الفصل {n}</option>)}
-                  </select>
-                </div>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chapterDetails}>
-                      <XAxis dataKey="name" hide />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip cursor={{fill: '#f1f5f9'}} />
-                      <Bar dataKey="score" fill="#0f172a" radius={[6,6,0,0]} barSize={25} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="bg-white p-8 rounded-[32px] border-2 border-blue-100 shadow-sm">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-lg font-black text-blue-900">أداء طالب من {selectedClass}</h3>
-                  <select value={selectedStudent} onChange={(e) => handleStudentSelect(e.target.value)} className="p-2 bg-blue-50 rounded-lg outline-none font-bold text-blue-700 border border-blue-200 max-w-[200px]">
-                    <option value="">اختر طالباً</option>
-                    {students.map((s:any) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div className="h-[300px]">
-                  {selectedStudent ? (
+            <motion.div key="analysis" initial={{opacity:0}} animate={{opacity:1}} className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+              <ChartWrapper title={`مستوى الإتقان للفصل الدراسي`}>
+                {chaptersAvg.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={studentPerf}>
-                        <XAxis dataKey="subject" />
+                        <AreaChart data={chaptersAvg}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" />
                         <YAxis domain={[0, 100]} />
                         <Tooltip />
-                        <Bar dataKey="score" radius={[10, 10, 0, 0]} barSize={40}>
-                          {studentPerf.map((entry:any, index) => (
-                            <Cell key={index} fill={entry.score < 50 ? "#ef4444" : "#3b82f6"} />
-                          ))}
-                        </Bar>
-                      </BarChart>
+                        <Area type="monotone" dataKey="score" stroke="#2563eb" fill="#dbeafe" strokeWidth={5} />
+                        </AreaChart>
                     </ResponsiveContainer>
-                  ) : <div className="h-full flex items-center justify-center text-slate-400 italic font-medium">الرجاء اختيار طالب من القائمة أعلاه</div>}
-                </div>
-              </div>
+                ) : <EmptyState />}
+              </ChartWrapper>
 
-              <div className="bg-slate-50 p-8 rounded-[32px] border border-slate-200">
-                <h3 className="text-lg font-black mb-6 text-slate-700">مقارنة القوة بين الفصول</h3>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
+              <ChartWrapper title={`توزيع درجات الطلاب حسب الفصل`} 
+                action={<select value={selectedChapter} onChange={(e) => loadChapterDetails(e.target.value, selectedClass)} className="p-2 bg-white rounded-xl border font-black outline-none">
+                    {[1,2,3,4,5].map(n => <option key={n} value={n}>الفصل {n}</option>)}
+                </select>}>
+                {chapterDetails.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={chapterDetails}>
+                        <XAxis dataKey="name" hide />
+                        <YAxis domain={[0, 100]} />
+                        <Tooltip />
+                        <Bar dataKey="score" fill="#0f172a" radius={[8,8,0,0]} barSize={30} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                ) : <EmptyState />}
+              </ChartWrapper>
+
+              <ChartWrapper title={`تحليل أداء طالب منفرد`}
+                action={<select value={selectedStudent} onChange={(e) => handleStudentSelect(e.target.value)} className="p-2 bg-blue-50 rounded-xl border-blue-200 font-black text-blue-700 outline-none">
+                    <option value="">اختر طالباً</option>
+                    {students.map((s:any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>}>
+                {selectedStudent ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={studentPerf}>
+                            <XAxis dataKey="subject" />
+                            <YAxis domain={[0, 100]} />
+                            <Tooltip />
+                            <Bar dataKey="score" radius={[10, 10, 0, 0]} barSize={40}>
+                                {studentPerf.map((entry:any, index) => (
+                                    <Cell key={index} fill={entry.score < 50 ? "#ef4444" : "#3b82f6"} />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                ) : <div className="h-full flex items-center justify-center text-slate-400 font-bold italic">يرجى تحديد طالب لعرض مهاراته</div>}
+              </ChartWrapper>
+
+              <ChartWrapper title={`مقارنة متوسط الفصول الدراسية`}>
+                 <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={classCompare}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
                       <XAxis dataKey="name" />
                       <YAxis domain={[0, 100]} />
                       <Tooltip />
@@ -199,29 +225,77 @@ export default function TeacherDashboard() {
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
-              </div>
+              </ChartWrapper>
             </motion.div>
           )}
 
           {activeTab === "factory" && (
-            <motion.div initial={{opacity:0, scale:0.98}} animate={{opacity:1, scale:1}} className="bg-slate-50 p-12 rounded-[40px] border border-slate-200 text-center">
-                <h2 className="text-2xl font-black mb-4">صناعة اختبار لطلاب {selectedClass}</h2>
-                <p className="text-slate-500 mb-10 font-medium text-lg">حدد الفصول وسيقوم نظام الـ RAG بتوليد أسئلة من الكتاب المدرسي.</p>
-                <div className="max-w-2xl mx-auto space-y-8">
-                    <div className="flex items-center gap-4 justify-center">
-                        <span className="font-bold text-slate-700">عدد الأسئلة:</span>
-                        <input type="number" defaultValue={10} className="w-24 p-3 rounded-xl border-2 border-slate-200 outline-none focus:border-blue-500 font-bold text-center" />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {["الكسور الاعتيادية", "الضرب والقسمة", "الأشكال الهندسية", "القياس والوحدات", "الجبر والعمليات"].map((chap, i) => (
-                        <div key={i} className="p-6 bg-white rounded-2xl border-2 border-slate-100 flex items-center gap-4 hover:border-blue-400 cursor-pointer transition-all group shadow-sm">
-                            <div className="w-10 h-10 bg-slate-200 group-hover:bg-blue-600 group-hover:text-white text-slate-600 rounded-full flex items-center justify-center font-bold transition-colors">{i+1}</div>
-                            <span className="font-bold text-slate-800">{chap}</span>
-                        </div>
+            <motion.div key="factory" initial={{opacity:0, scale:0.98}} animate={{opacity:1, scale:1}} className="space-y-12">
+                {/* مصنع الاختبارات الدوري */}
+                <div className="bg-white p-12 rounded-[4rem] border-2 border-slate-100 shadow-xl shadow-slate-200/50">
+                    <h2 className="text-3xl font-black mb-4">مصنع الاختبارات الذكي للفصل</h2>
+                    <p className="text-slate-500 mb-12 font-bold text-xl leading-relaxed">اختر موضوعات الكتاب التي ترغب في تضمينها، وسيقوم الذكاء الاصطناعي بصياغة الأسئلة بناءً على المحتوى.</p>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-12">
+                      {["الأعداد النسبية", "القوى والجذور", "التناسب", "المساحات", "الجبر"].map((chap, i) => (
+                        <button key={i} onClick={() => toggleChapterSelection(chap)}
+                            className={`p-6 rounded-[2rem] border-4 transition-all flex flex-col items-center gap-3 ${selectedChapters.includes(chap) ? "border-blue-600 bg-blue-50 text-blue-700 scale-105" : "border-slate-100 bg-slate-50 hover:border-slate-200"}`}>
+                            <span className="text-sm font-black opacity-40">الفصل {i+1}</span>
+                            <span className="font-black text-xl text-center">{chap}</span>
+                        </button>
                       ))}
                     </div>
-                    <button className="bg-slate-900 text-white px-16 py-5 rounded-3xl font-black text-xl hover:bg-black transition-all shadow-xl transform hover:scale-105 active:scale-95">بدء التوليد الذكي</button>
+                    
+                    <button onClick={generateClassQuiz} disabled={factoryLoading}
+                        className="bg-slate-900 text-white px-24 py-6 rounded-[2.5rem] font-black text-2xl hover:bg-black transition-all shadow-2xl disabled:opacity-50 active:scale-95">
+                        {factoryLoading ? "جاري طبخ الأسئلة..." : "نشر الاختبار لجميع الطلاب"}
+                    </button>
+                </div>
+
+                {/* متابعة المتعثرين بالمفاهيم */}
+                <div className="bg-white p-12 rounded-[4rem] border-4 border-red-50 shadow-2xl">
+                    <div className="flex justify-between items-center mb-10">
+                        <div>
+                            <h2 className="text-3xl font-black text-red-600">رادار الطلاب المتعثرين</h2>
+                            <p className="text-slate-500 font-bold mt-2">طلاب بحاجة لدعم في مفاهيم محددة.. ارسل لهم اختبارات تعزيزية</p>
+                        </div>
+                    </div>
+                    
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-right">
+                            <thead>
+                                <tr className="text-slate-400 border-b-2 border-slate-100 uppercase text-sm">
+                                    <th className="pb-6 font-black tracking-widest">اسم الطالب</th>
+                                    <th className="pb-6 font-black tracking-widest">المفهوم الضعيف</th>
+                                    <th className="pb-6 font-black text-center tracking-widest">نسبة الإتقان</th>
+                                    <th className="pb-6 font-black text-left px-4">الإجراء العلاجي</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {strugglingStudents.length > 0 ? strugglingStudents.map((s: any) => (
+                                    <tr key={`${s.id}-${s.concept}`} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors group">
+                                        <td className="py-6 font-black text-xl text-slate-800">{s.name}</td>
+                                        <td className="py-6">
+                                            <span className="bg-red-100 text-red-700 px-6 py-2 rounded-full text-lg font-black border border-red-200 uppercase">
+                                                {s.concept}
+                                            </span>
+                                        </td>
+                                        <td className="py-6 text-center font-black text-2xl text-red-500">{s.score}%</td>
+                                        <td className="py-6 text-left">
+                                            <button onClick={() => sendRemedialQuiz(s.name, s.concept)}
+                                                className="bg-slate-800 text-white px-8 py-3 rounded-2xl font-black text-sm hover:bg-red-600 transition-all opacity-0 group-hover:opacity-100 shadow-lg">
+                                                إرسال اختبار دعم
+                                            </button>
+                                        </td>
+                                    </tr>
+                                )) : (
+                                    <tr>
+                                        <td colSpan={4} className="py-20 text-center text-slate-400 font-bold text-2xl">لا يوجد طلاب متعثرين حالياً، أداء الفصل ممتاز.</td>
+                                    </tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </motion.div>
           )}
@@ -233,9 +307,25 @@ export default function TeacherDashboard() {
 
 function StatCard({ label, value, color }: any) {
   return (
-    <div className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm hover:shadow-md transition-shadow">
-      <p className="text-slate-500 text-sm font-bold mb-2">{label}</p>
-      <p className={`text-4xl font-black ${color}`}>{value}</p>
+    <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-2xl transition-all">
+      <p className="text-slate-400 text-sm font-black uppercase tracking-wider mb-4">{label}</p>
+      <p className={`text-5xl font-black ${color}`}>{value}</p>
     </div>
   );
+}
+
+function ChartWrapper({ title, children, action }: any) {
+    return (
+        <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl shadow-slate-200/40">
+            <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-black text-slate-700">{title}</h3>
+                {action}
+            </div>
+            <div className="h-[350px]">{children}</div>
+        </div>
+    );
+}
+
+function EmptyState() {
+    return <div className="h-full flex items-center justify-center text-slate-400 font-bold italic text-lg text-center p-10">لا توجد بيانات كافية للتحليل حالياً</div>;
 }
