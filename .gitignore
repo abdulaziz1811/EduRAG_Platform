@@ -3,3 +3,4 @@ __pycache__/
 .env
 edurag.db # اختياري: إذا تبي قاعدة البيانات تكون محلية فقط
 node_modules/
+edurag.db
