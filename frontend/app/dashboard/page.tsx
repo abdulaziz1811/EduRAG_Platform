@@ -176,20 +176,64 @@ export default function TeacherDashboard() {
               </ChartWrapper>
 
               <ChartWrapper title={`توزيع درجات الطلاب حسب الفصل`} 
-                action={<select value={selectedChapter} onChange={(e) => loadChapterDetails(e.target.value, selectedClass)} className="p-2 bg-white rounded-xl border font-black outline-none">
-                    {[1,2,3,4,5].map(n => <option key={n} value={n}>الفصل {n}</option>)}
-                </select>}>
-                {chapterDetails.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={chapterDetails}>
-                        <XAxis dataKey="name" hide />
-                        <YAxis domain={[0, 100]} />
-                        <Tooltip />
-                        <Bar dataKey="score" fill="#0f172a" radius={[8,8,0,0]} barSize={30} />
-                        </BarChart>
-                    </ResponsiveContainer>
-                ) : <EmptyState />}
-              </ChartWrapper>
+  action={<select value={selectedChapter} onChange={(e) => loadChapterDetails(e.target.value, selectedClass)} className="p-2 bg-white rounded-xl border font-black outline-none">
+      {[1,2,3,4,5].map(n => <option key={n} value={n}>الفصل {n}</option>)}
+  </select>}>
+  {chapterDetails.length > 0 ? (
+      <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chapterDetails} barGap={5}>
+            {/* تعريف التدرج اللوني الأزرق */}
+            <defs>
+              <linearGradient id="blueGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#3b82f6" stopOpacity={1}/>
+                <stop offset="100%" stopColor="#60a5fa" stopOpacity={0.8}/>
+              </linearGradient>
+               {/* تعريف لون أحمر للراسبين */}
+               <linearGradient id="redGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#dc2626" stopOpacity={1}/>
+                <stop offset="100%" stopColor="#ef4444" stopOpacity={0.8}/>
+              </linearGradient>
+            </defs>
+
+            {/* خطوط الشبكة خلفية خفيفة */}
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+
+            {/* إخفاء الأسماء من المحور الأفقي لمنع التداخل */}
+            <XAxis dataKey="name" hide={true} axisLine={false} tickLine={false} />
+            
+            {/* تنسيق المحور العمودي */}
+            <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 12, fontWeight: 'bold'}} />
+            
+            {/* تلميح مخصص وأنيق يظهر عند تمرير الماوس */}
+            <Tooltip 
+               cursor={{fill: 'transparent'}}
+               content={({ active, payload, label }) => {
+                   if (active && payload && payload.length) {
+                     const score = payload[0].value as number;
+                     return (
+                       <div className="bg-white p-4 rounded-2xl shadow-xl border border-slate-100 text-center">
+                         <p className="font-black text-slate-800 mb-1 text-lg">{label}</p>
+                         <div className={`text-xl font-black ${score < 50 ? 'text-red-600' : 'text-blue-600'}`}>
+                           {score}% {score < 50 ? '' : ''} 
+                         </div>
+                       </div>
+                     );
+                   }
+                   return null;
+               }}
+            />
+
+            {/* الأعمدة بتصميم حديث */}
+            <Bar dataKey="score" radius={[20, 20, 0, 0]} barSize={16} animationDuration={1000}>
+                {/* شرط لتغيير اللون إذا كانت الدرجة أقل من 50 */}
+                {chapterDetails.map((entry:any, index:number) => (
+                    <Cell key={`cell-${index}`} fill={entry.score < 50 ? "url(#redGradient)" : "url(#blueGradient)"} />
+                ))}
+            </Bar>
+          </BarChart>
+      </ResponsiveContainer>
+  ) : <EmptyState />}
+</ChartWrapper>
 
               <ChartWrapper title={`تحليل أداء طالب منفرد`}
                 action={<select value={selectedStudent} onChange={(e) => handleStudentSelect(e.target.value)} className="p-2 bg-blue-50 rounded-xl border-blue-200 font-black text-blue-700 outline-none">
