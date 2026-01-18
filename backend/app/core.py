@@ -19,10 +19,14 @@ embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # --- وظيفة تحليل الفصل للـ RAG Summary ---
 def get_rag_analysis(class_name: str):
+    """
+    توليد تقرير تشخيصي بأسلوب إنساني مهني يربط المنهج بالواقع الصفي.
+    """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
+    # 1. تحليل الأداء الرقمي
     cursor.execute("SELECT AVG(total_score) as avg FROM student_stats WHERE class_name = ?", (class_name,))
     avg_score = cursor.fetchone()['avg'] or 0
 
@@ -32,23 +36,76 @@ def get_rag_analysis(class_name: str):
         WHERE s.class_name = ? GROUP BY c.concept ORDER BY c_avg ASC LIMIT 1
     """, (class_name,))
     weak_row = cursor.fetchone()
+    
+    if not weak_row:
+        conn.close()
+        return "أهلاً بك.. حالياً لا توجد بيانات كافية لتحليل أداء الفصل. يرجى التأكد من رصد درجات الطلاب."
+
+    weak_concept = weak_row['concept']
+    
+    # تحديد الطلاب المتعثرين
+    cursor.execute("""
+        SELECT s.name FROM student_stats s 
+        JOIN concept_stats c ON s.id = c.student_id
+        WHERE s.class_name = ? AND c.concept = ? AND c.score < 50
+        LIMIT 4
+    """, (class_name, weak_concept))
+    struggling_names = [r['name'] for r in cursor.fetchall()]
     conn.close()
 
-    weak_concept = weak_row['concept'] if weak_row else "المفاهيم العامة"
-    
-    # استرجاع سياق من الكتاب حول المفهوم الضعيف
-    context = ""
+    # 2. استرجاع السياق المنهجي من الكتاب (RAG)
+    context_text = ""
     try:
-        index = faiss.read_index(os.path.join(RAG_DATA_DIR, "index.faiss"))
-        with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
-            chunks = pickle.load(f)
-        query_vector = embedding_model.encode([f"شرح عن {weak_concept}"])
-        _, indices = index.search(np.array([query_vector]).astype('float32'), k=1)
-        context = chunks[indices[0][0]]
-    except: context = "لا يوجد سياق متوفر."
+        index_path = os.path.join(RAG_DATA_DIR, "index.faiss")
+        if os.path.exists(index_path):
+            index = faiss.read_index(index_path)
+            with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
+                chunks = pickle.load(f)
+            
+            # بحث مكثف (جلب أفضل 5 قطع لشرح المفهوم)
+            query_vector = embedding_model.encode([f"شرح مفصل لدرس {weak_concept} وكيفية حل مسائله"])
+            _, indices = index.search(np.array([query_vector]).astype('float32'), k=5)
+            context_text = "\n".join([chunks[i] for i in indices[0] if i != -1])
+    except Exception as e:
+        print(f"RAG Retrieval Notice: {e}")
 
-    prompt = f"التقرير: الفصل {class_name} يعاني في {weak_concept}. المتوسط {avg_score:.1f}%. السياق المنهجي: {context[:200]}"
-    return prompt
+    # 3. بناء الـ Prompt الإنساني (Colleague Style)
+    system_prompt = (
+        "أنت مستشار أكاديمي خبير. اكتب بأسلوب إنساني، دافئ، ومهني كأنك تخاطب المعلم مباشرة كزميل. "
+        "تجنب العناوين الجامدة مثل (أولاً، ثانياً) أو كثرة النقاط. "
+        "ادمج المادة العلمية المستخرجة من الكتاب في صلب حديثك التشخيصي أو العلاجي بشكل طبيعي."
+    )
+    
+    user_prompt = f"""
+    يا هلا بك.. هذا ملخص لمستوى طلاب فصل "{class_name}":
+    - متوسط الفصل العام حالياً هو {avg_score:.1f}%.
+    - المهارة التي تحتاج وقفة هي "{weak_concept}".
+    - الطلاب الذين يواجهون تحديات واضحة في هذا المفهوم: {', '.join(struggling_names) if struggling_names else 'لا توجد حالات حرجة'}.
+    - المحتوى العلمي المرتبط من الكتاب المدرسي: {context_text[:1200]}
+
+    المطلوب كتابة تقرير (بأسلوب السرد المهني المباشر):
+    1. ابدأ بتحية زميلك المعلم وشاركه قراءتك لمستوى الفصل بشكل عام.
+    2. وضح أين تكمن الصعوبة في "{weak_concept}" بناءً على ما ورد في الكتاب المدرسي (ادمج القواعد العلمية هنا بلا قسم مستقل).
+    3. وجه تركيز المعلم نحو الطلاب ({', '.join(struggling_names)}) وكيف يمكن مساعدتهم.
+    4. اختم بتوصية عملية ومبتكرة للحصة القادمة لترميم هذه الفجوة.
+
+    مهم جداً: خفف من الرموز والنقاط، واجعل الكلام يتدفق كأنه نصائح إنسانية مهنية.
+    ابدأ بعبارة: "مرحباً يا زميلي.. إليك نظرة على مستجدات فصلك:"
+    """
+
+    try:
+        response = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.5, # زيادة طفيفة للإبداع في اللغة
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"عذراً يا زميلي، حدث خطأ تقني في توليد التقرير: {str(e)}"
 
 # --- وظيفة توليد الاختبارات الديناميكية (مصنع الاختبارات) ---
 def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, target_concept: str = None):
