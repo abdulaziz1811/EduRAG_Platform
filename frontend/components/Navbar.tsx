@@ -12,12 +12,12 @@ export default function Navbar() {
             
             <div className="flex items-center gap-4">
               <Link href="/" className="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md font-medium transition-colors">
-                واجهة الطالب
-              </Link>
+                بوابة الطالب          
+               </Link>
               
               {/* هذا هو الرابط الذي سيعيدك لواجهة المعلم */}
               <Link href="/dashboard" className="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-md font-medium transition-colors">
-                واجهة المعلم
+                بوابة المعلم
               </Link>
             </div>
           </div>

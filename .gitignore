@@ -1,6 +1,91 @@
-__pycache__/
-*.DS_Store
-.env
-edurag.db # اختياري: إذا تبي قاعدة البيانات تكون محلية فقط
+# ===== EduRAG Platform - Git Ignore =====
+
+# ===== Dependencies =====
 node_modules/
-edurag.db
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+.env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===== Environment Variables =====
+.env
+.env.local
+.env.*.local
+*.env
+
+# ===== Database =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== RAG Data =====
+rag_data/
+data/*.pdf
+*.faiss
+*.pkl
+!.gitkeep
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ===== OS =====
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ===== Logs =====
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== Build =====
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+MANIFEST
+
+# ===== Next.js =====
+.next/
+out/
+.vercel
+
+# ===== Testing =====
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# ===== Misc =====
+*.bak
+*.tmp
+*.temp
+.cache/

@@ -1,25 +1,42 @@
+"""
+EduRAG Pro - RAG Index Builder
+==============================
+بناء قاعدة المعرفة الموثقة من كتاب PDF لنظام الإشراف الأكاديمي
+"""
+
 import os
 import faiss
 import pickle
 import PyPDF2
 import re
+import logging
 from sentence_transformers import SentenceTransformer
+
+# إعداد اللوقر (Logging) لنسخة Pro
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # --- إعدادات المسارات ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PDF_PATH = os.path.join(BASE_DIR, "data", "math.pdf")
-INDEX_PATH = os.path.join(BASE_DIR, "rag_data", "index.faiss")
-CHUNKS_PATH = os.path.join(BASE_DIR, "rag_data", "chunks.pkl")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+RAG_DATA_DIR = os.path.join(BASE_DIR, "rag_data")
+
+# تأكد من أن ملف math.pdf موجود في مجلد backend/data
+PDF_PATH = os.path.join(DATA_DIR, "math.pdf")
+INDEX_PATH = os.path.join(RAG_DATA_DIR, "index.faiss")
+CHUNKS_PATH = os.path.join(RAG_DATA_DIR, "chunks.pkl")
 
 def extract_text_from_pdf():
     """
-    استخراج النص مباشرة من PDF بدون OCR
-    أسرع وأدق بكثير من OCR
+    استخراج النص من PDF وتقسيمه لفقرات منطقية مع حفظ رقم الصفحة لكل فقرة
     """
-    print(f"📖 جاري قراءة الكتاب من: {PDF_PATH}")
+    logger.info(f"جاري قراءة المحتوى العلمي من المسار: {PDF_PATH}")
     
     if not os.path.exists(PDF_PATH):
-        print(f"❌ خطأ: الملف غير موجود في {PDF_PATH}")
+        logger.error(f"فشل العثور على ملف المرجع: {PDF_PATH}")
         return []
 
     text_chunks = []
@@ -28,19 +45,18 @@ def extract_text_from_pdf():
         with open(PDF_PATH, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             total_pages = len(pdf_reader.pages)
-            print(f"📄 عدد صفحات الكتاب: {total_pages}")
+            logger.info(f"إجمالي عدد صفحات المستند المستهدفة: {total_pages}")
             
             for page_num in range(total_pages):
                 page = pdf_reader.pages[page_num]
                 text = page.extract_text()
                 
-                if text.strip():
-                    # تنظيف النص من الأسطر الفارغة والمسافات الزائدة
+                if text and text.strip():
+                    # تنظيف النص ومعالجته برمجياً
                     cleaned_text = re.sub(r'\s+', ' ', text).strip()
                     
-                    # تقسيم النص إلى فقرات منطقية (كل 500-800 حرف)
+                    # تقسيم النص إلى فقرات (Chunks) بطول 800 حرف لضمان جودة الاسترجاع
                     if len(cleaned_text) > 800:
-                        # تقسيم النص لفقرات أصغر
                         sentences = re.split(r'[.؟!]\s+', cleaned_text)
                         current_chunk = ""
                         
@@ -55,7 +71,7 @@ def extract_text_from_pdf():
                                     })
                                 current_chunk = sentence + ". "
                         
-                        # إضافة آخر فقرة
+                        # إضافة الفقرة الأخيرة المتبقية
                         if current_chunk.strip():
                             text_chunks.append({
                                 "page_number": page_num + 1,
@@ -67,76 +83,67 @@ def extract_text_from_pdf():
                             "content": cleaned_text
                         })
                 
-                if (page_num + 1) % 10 == 0:
-                    print(f"   ✅ تم معالجة {page_num + 1} صفحة...")
+                if (page_num + 1) % 20 == 0:
+                    logger.info(f"تمت معالجة {page_num + 1} صفحة بنجاح...")
     
     except Exception as e:
-        print(f"❌ حدث خطأ أثناء القراءة: {e}")
+        logger.error(f"حدث خطأ غير متوقع أثناء استخراج البيانات: {e}")
         return []
     
     return text_chunks
 
 def build_index():
     """
-    بناء الفهرس مع تحسينات كبيرة في جودة الاستخراج
+    بناء الفهرس الرقمي وربط النصوص بالمراجع الصفحية
     """
-    # 1. استخراج النص
+    # 1. استخراج النص والميتا داتا
     text_chunks = extract_text_from_pdf()
     
     if not text_chunks:
-        print("❌ فشل استخراج النصوص من الكتاب")
+        logger.error("فشل عملية بناء قاعدة المعرفة: لم يتم استخراج أي بيانات صالحة.")
         return
     
-    print(f"⚡ تم استخراج {len(text_chunks)} فقرة نصية")
+    logger.info(f"تم استخراج {len(text_chunks)} فقرة تعليمية موثقة برقم الصفحة.")
     
-    # عرض عينة من النصوص للتأكد من الجودة
-    print("\n📝 عينة من المحتوى المستخرج:")
-    print("-" * 70)
-    for i, chunk in enumerate(text_chunks[:3], 1):
-        preview = chunk['content'][:150] + "..." if len(chunk['content']) > 150 else chunk['content']
-        print(f"{i}. صفحة {chunk['page_number']}: {preview}")
-    print("-" * 70)
-    
-    # 2. تحميل نموذج الذكاء الاصطناعي
-    print("\n🧠 جاري تحميل نموذج اللغة...")
+    # 2. تحميل نموذج الذكاء الاصطناعي (Embeddings)
+    logger.info("جاري تحميل مفسر اللغة (paraphrase-multilingual-MiniLM-L12-v2)...")
     model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     
-    # 3. توليد الـ embeddings
-    print("🔄 جاري توليد الـ embeddings...")
-    embeddings = model.encode(
-        [chunk["content"] for chunk in text_chunks],
-        show_progress_bar=True,
-        batch_size=32
-    )
+    # 3. توليد الـ Vector Embeddings لنصوص الكتاب
+    logger.info("جاري تحويل الفقرات التعليمية إلى متجهات رقمية...")
+    contents = [chunk["content"] for chunk in text_chunks]
+    embeddings = model.encode(contents, show_progress_bar=True, batch_size=32)
     
-    # 4. بناء الفهرس
-    print("🏗️ جاري بناء هيكل البحث (FAISS Index)...")
+    # 4. بناء هيكل البحث السريع (FAISS Index)
+    logger.info("إنشاء الفهرس الرقمي للبحث الدلالي (FAISS Index)...")
     dimension = embeddings.shape[1]
     index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
+    index.add(embeddings.astype('float32'))
     
-    # 5. الحفظ
-    print("💾 جاري الحفظ...")
-    os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
+    # 5. حفظ قاعدة المعرفة المحدثة
+    logger.info("جاري حفظ الفهرس والبيانات الوصفية الموثقة...")
+    os.makedirs(RAG_DATA_DIR, exist_ok=True)
     
+    # حفظ الفهرس (index.faiss)
     faiss.write_index(index, INDEX_PATH)
     
-    # حفظ chunks كنصوص مباشرة (string) مو dict
-    chunks_text = [chunk["content"] for chunk in text_chunks]
+    # التعديل الهام: حفظ النص مع رقم الصفحة في كائن واحد لضمان دقة المراجع
+    chunks_with_metadata = []
+    for chunk in text_chunks:
+        chunks_with_metadata.append({
+            "content": chunk["content"],
+            "metadata": {"page": chunk["page_number"]}
+        })
+    
+    # حفظ النصوص مع مراجعها (chunks.pkl)
     with open(CHUNKS_PATH, "wb") as f:
-        pickle.dump(chunks_text, f)
+        pickle.dump(chunks_with_metadata, f)
     
-    # حفظ معلومات الصفحات في ملف منفصل
-    pages_info = [chunk["page_number"] for chunk in text_chunks]
-    pages_path = os.path.join(os.path.dirname(CHUNKS_PATH), "pages.pkl")
-    with open(pages_path, "wb") as f:
-        pickle.dump(pages_info, f)
-    
-    print("\n" + "=" * 70)
-    print("✅ تم بناء قاعدة المعرفة بنجاح! 🎉")
-    print(f"   📊 عدد الفقرات: {len(text_chunks)}")
-    print(f"   📍 المسار: {INDEX_PATH}")
-    print("=" * 70)
+    logger.info("=" * 60)
+    logger.info("✅ تم تحديث قاعدة معرفة EduRAG Pro بنجاح")
+    logger.info(f"إجمالي الوحدات النصية الموثقة: {len(chunks_with_metadata)}")
+    logger.info(f"مسار الفهرس: {INDEX_PATH}")
+    logger.info("=" * 60)
 
 if __name__ == "__main__":
     build_index()

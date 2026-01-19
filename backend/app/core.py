@@ -1,115 +1,210 @@
+"""
+EduRAG - Core Business Logic
+============================
+منطق الأعمال الرئيسي: RAG Analysis و Quiz Generation
+"""
+
 import os
 import sqlite3
 import pickle
+import json
+import logging
+from typing import Optional, List, Dict, Any
+
 import faiss
 import numpy as np
-import json
 from sentence_transformers import SentenceTransformer
 from groq import Groq
 from dotenv import load_dotenv
 
-# إعداد المسارات
+# إعداد اللوقر
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ===== إعداد المسارات =====
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "edurag.db")
 RAG_DATA_DIR = os.path.join(BASE_DIR, "rag_data")
 
+# ===== تحميل المتغيرات البيئية =====
 load_dotenv()
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# ✅ تحديث: استخدام نفس النموذج في build_index.py
-embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+# ===== إعداد Groq Client =====
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    logger.warning("⚠️ GROQ_API_KEY غير موجود في ملف .env")
+    groq_client = None
+else:
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    logger.info("✅ تم تهيئة Groq Client بنجاح")
 
-# --- وظيفة تحليل الفصل للـ RAG Summary (محسّنة) ---
-def get_rag_analysis(class_name: str):
+# ===== تحميل نموذج الـ Embeddings =====
+MODEL_NAME = 'paraphrase-multilingual-MiniLM-L12-v2'
+try:
+    embedding_model = SentenceTransformer(MODEL_NAME)
+    logger.info(f"✅ تم تحميل نموذج الـ Embeddings: {MODEL_NAME}")
+except Exception as e:
+    logger.error(f"❌ فشل تحميل نموذج الـ Embeddings: {e}")
+    embedding_model = None
+
+
+# ===== Helper Functions =====
+
+def extract_chunk_text(chunk: Any) -> str:
+    """استخراج النص من chunk سواء كان dict أو string"""
+    if isinstance(chunk, dict):
+        return chunk.get('content', '')
+    return str(chunk) if chunk else ''
+
+
+def load_rag_index() -> tuple:
     """
-    توليد تقرير تشخيصي بأسلوب إنساني مهني يربط المنهج بالواقع الصفي.
+    تحميل فهرس FAISS والـ chunks
+    Returns: (index, chunks) or (None, None) if failed
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    index_path = os.path.join(RAG_DATA_DIR, "index.faiss")
+    chunks_path = os.path.join(RAG_DATA_DIR, "chunks.pkl")
     
-    # 1. تحليل الأداء الرقمي
-    cursor.execute("SELECT AVG(total_score) as avg FROM student_stats WHERE class_name = ?", (class_name,))
-    avg_score = cursor.fetchone()['avg'] or 0
-
-    cursor.execute("""
-        SELECT c.concept, AVG(c.score) as c_avg 
-        FROM concept_stats c JOIN student_stats s ON c.student_id = s.id
-        WHERE s.class_name = ? GROUP BY c.concept ORDER BY c_avg ASC LIMIT 1
-    """, (class_name,))
-    weak_row = cursor.fetchone()
+    if not os.path.exists(index_path):
+        logger.warning(f"⚠️ ملف الفهرس غير موجود: {index_path}")
+        return None, None
     
-    if not weak_row:
-        conn.close()
-        return "أهلاً بك.. حالياً لا توجد بيانات كافية لتحليل أداء الفصل. يرجى التأكد من رصد درجات الطلاب."
-
-    weak_concept = weak_row['concept']
+    if not os.path.exists(chunks_path):
+        logger.warning(f"⚠️ ملف الـ chunks غير موجود: {chunks_path}")
+        return None, None
     
-    # تحديد الطلاب المتعثرين
-    cursor.execute("""
-        SELECT s.name FROM student_stats s 
-        JOIN concept_stats c ON s.id = c.student_id
-        WHERE s.class_name = ? AND c.concept = ? AND c.score < 50
-        LIMIT 4
-    """, (class_name, weak_concept))
-    struggling_names = [r['name'] for r in cursor.fetchall()]
-    conn.close()
-
-    # 2. استرجاع السياق المنهجي من الكتاب (RAG) - محسّن
-    context_text = ""
     try:
-        index_path = os.path.join(RAG_DATA_DIR, "index.faiss")
-        if os.path.exists(index_path):
-            index = faiss.read_index(index_path)
-            with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
-                chunks = pickle.load(f)
-            
-            # ✅ التحسين: زيادة من 5 إلى 15 للحصول على سياق أغنى
-            query_vector = embedding_model.encode([f"شرح مفصل وتفصيلي لدرس {weak_concept} مع أمثلة ومسائل وطرق الحل"])
-            _, indices = index.search(np.array([query_vector]).astype('float32'), k=15)
-            
-            # جمع النصوص مع معالجة أفضل
-            retrieved_texts = []
-            for i in indices[0]:
-                if i != -1 and i < len(chunks):
-                    chunk = chunks[i]
-                    # التعامل مع chunks سواء dict أو string
-                    if isinstance(chunk, dict):
-                        text = chunk.get('content', '')
-                    else:
-                        text = str(chunk)
-                    
-                    if text and len(text) > 50:
-                        retrieved_texts.append(text)
-            
-            context_text = "\n\n".join(retrieved_texts[:10])
+        index = faiss.read_index(index_path)
+        with open(chunks_path, "rb") as f:
+            chunks = pickle.load(f)
+        logger.info(f"✅ تم تحميل الفهرس ({index.ntotal} vectors) والـ chunks ({len(chunks)} items)")
+        return index, chunks
     except Exception as e:
-        print(f"RAG Retrieval Notice: {e}")
+        logger.error(f"❌ خطأ في تحميل RAG: {e}")
+        return None, None
 
-    # 3. بناء الـ Prompt الإنساني (Colleague Style)
-    system_prompt = (
-        "أنت مستشار أكاديمي خبير. اكتب بأسلوب إنساني، دافئ، ومهني كأنك تخاطب المعلم مباشرة كزميل. "
-        "تجنب العناوين الجامدة مثل (أولاً، ثانياً) أو كثرة النقاط. "
-        "ادمج المادة العلمية المستخرجة من الكتاب في صلب حديثك التشخيصي أو العلاجي بشكل طبيعي."
-    )
-    
-    user_prompt = f"""
-    يا هلا بك.. هذا ملخص لمستوى طلاب فصل "{class_name}":
-    - متوسط الفصل العام حالياً هو {avg_score:.1f}%.
-    - المهارة التي تحتاج وقفة هي "{weak_concept}".
-    - الطلاب الذين يواجهون تحديات واضحة في هذا المفهوم: {', '.join(struggling_names) if struggling_names else 'لا توجد حالات حرجة'}.
-    - المحتوى العلمي المرتبط من الكتاب المدرسي: {context_text[:2000]}
 
-    المطلوب كتابة تقرير (بأسلوب السرد المهني المباشر):
-    1. ابدأ بتحية زميلك المعلم وشاركه قراءتك لمستوى الفصل بشكل عام.
-    2. وضح أين تكمن الصعوبة في "{weak_concept}" بناءً على ما ورد في الكتاب المدرسي (ادمج القواعد العلمية هنا بلا قسم مستقل).
-    3. وجه تركيز المعلم نحو الطلاب ({', '.join(struggling_names)}) وكيف يمكن مساعدتهم.
-    4. اختم بتوصية عملية ومبتكرة للحصة القادمة لترميم هذه الفجوة.
-
-    مهم جداً: خفف من الرموز والنقاط، واجعل الكلام يتدفق كأنه نصائح إنسانية مهنية.
-    ابدأ بعبارة: "مرحباً يا زميلي.. إليك نظرة على مستجدات فصلك:"
+def search_rag(query: str, top_k: int = 10) -> List[str]:
     """
+    البحث في قاعدة المعرفة RAG
+    """
+    if not embedding_model:
+        logger.error("نموذج الـ Embeddings غير متاح")
+        return []
+    
+    index, chunks = load_rag_index()
+    if index is None or chunks is None:
+        return []
+    
+    try:
+        # توليد vector للاستعلام
+        query_vector = embedding_model.encode([query])
+        query_vector = np.array(query_vector).astype('float32')
+        
+        # البحث
+        _, indices = index.search(query_vector, k=top_k)
+        
+        # جمع النتائج
+        results = []
+        for i in indices[0]:
+            if i != -1 and i < len(chunks):
+                text = extract_chunk_text(chunks[i])
+                if text and len(text) > 50:
+                    results.append(text)
+        
+        return results
+    except Exception as e:
+        logger.error(f"❌ خطأ في البحث RAG: {e}")
+        return []
 
+
+# ===== Main Functions =====
+
+def get_rag_analysis(class_name: str) -> str:
+    """
+    توليد تقرير تشخيصي بأسلوب إنساني مهني يربط المنهج بالواقع الصفي
+    """
+    if not groq_client:
+        return "⚠️ خدمة توليد التقارير غير متاحة حالياً. يرجى التأكد من إعداد GROQ_API_KEY."
+    
+    # 1. جلب البيانات من قاعدة البيانات
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # متوسط الفصل
+        cursor.execute(
+            "SELECT AVG(total_score) as avg FROM student_stats WHERE class_name = ?",
+            (class_name,)
+        )
+        row = cursor.fetchone()
+        avg_score = row['avg'] if row and row['avg'] else 0
+        
+        # المفهوم الأضعف
+        cursor.execute("""
+            SELECT c.concept, AVG(c.score) as c_avg 
+            FROM concept_stats c 
+            JOIN student_stats s ON c.student_id = s.id
+            WHERE s.class_name = ? 
+            GROUP BY c.concept 
+            ORDER BY c_avg ASC 
+            LIMIT 1
+        """, (class_name,))
+        weak_row = cursor.fetchone()
+        
+        if not weak_row:
+            conn.close()
+            return "أهلاً بك.. حالياً لا توجد بيانات كافية لتحليل أداء الفصل. يرجى التأكد من رصد درجات الطلاب."
+        
+        weak_concept = weak_row['concept']
+        
+        # الطلاب المتعثرين
+        cursor.execute("""
+            SELECT s.name FROM student_stats s 
+            JOIN concept_stats c ON s.id = c.student_id
+            WHERE s.class_name = ? AND c.concept = ? AND c.score < 50
+            LIMIT 4
+        """, (class_name, weak_concept))
+        struggling_names = [r['name'] for r in cursor.fetchall()]
+        
+        conn.close()
+        
+    except sqlite3.Error as e:
+        logger.error(f"❌ خطأ في قاعدة البيانات: {e}")
+        return f"حدث خطأ في جلب البيانات: {str(e)}"
+    
+    # 2. استرجاع السياق من RAG
+    search_query = f"شرح مفصل وتفصيلي لدرس {weak_concept} مع أمثلة ومسائل وطرق الحل"
+    retrieved_texts = search_rag(search_query, top_k=15)
+    context_text = "\n\n".join(retrieved_texts[:10]) if retrieved_texts else ""
+    
+    # 3. بناء الـ Prompt
+    system_prompt = """أنت مستشار أكاديمي خبير. اكتب بأسلوب إنساني، دافئ، ومهني كأنك تخاطب المعلم مباشرة كزميل.
+تجنب العناوين الجامدة مثل (أولاً، ثانياً) أو كثرة النقاط.
+ادمج المادة العلمية المستخرجة من الكتاب في صلب حديثك التشخيصي أو العلاجي بشكل طبيعي."""
+
+    struggling_str = ', '.join(struggling_names) if struggling_names else 'لا توجد حالات حرجة'
+    
+    user_prompt = f"""يا هلا بك.. هذا ملخص لمستوى طلاب فصل "{class_name}":
+- متوسط الفصل العام حالياً هو {avg_score:.1f}%.
+- المهارة التي تحتاج وقفة هي "{weak_concept}".
+- الطلاب الذين يواجهون تحديات واضحة في هذا المفهوم: {struggling_str}.
+- المحتوى العلمي المرتبط من الكتاب المدرسي: {context_text[:2000]}
+
+المطلوب كتابة تقرير (بأسلوب السرد المهني المباشر):
+1. ابدأ بتحية زميلك المعلم وشاركه قراءتك لمستوى الفصل بشكل عام.
+2. وضح أين تكمن الصعوبة في "{weak_concept}" بناءً على ما ورد في الكتاب المدرسي.
+3. وجه تركيز المعلم نحو الطلاب ({struggling_str}) وكيف يمكن مساعدتهم.
+4. اختم بتوصية عملية ومبتكرة للحصة القادمة لترميم هذه الفجوة.
+
+مهم جداً: خفف من الرموز والنقاط، واجعل الكلام يتدفق كأنه نصائح إنسانية مهنية.
+ابدأ بعبارة: "مرحباً يا زميلي.. إليك نظرة على مستجدات فصلك:" """
+
+    # 4. استدعاء Groq API
     try:
         response = groq_client.chat.completions.create(
             messages=[
@@ -117,63 +212,51 @@ def get_rag_analysis(class_name: str):
                 {"role": "user", "content": user_prompt}
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.6,  # ✅ زيادة قليلة للإبداع
-            max_tokens=1500   # ✅ زيادة من 1000 لمزيد من التفاصيل
+            temperature=0.6,
+            max_tokens=1500
         )
         return response.choices[0].message.content
     except Exception as e:
+        logger.error(f"❌ خطأ في Groq API: {e}")
         return f"عذراً يا زميلي، حدث خطأ تقني في توليد التقرير: {str(e)}"
 
-# --- وظيفة توليد الاختبارات الديناميكية (مصنع الاختبارات) - محسّنة بشكل كبير ---
-def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, target_concept: str = None):
+
+def generate_dynamic_quiz(
+    class_name: str,
+    selected_chapters: Optional[List[str]] = None,
+    target_concept: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    ✅ توليد اختبارات عالية الجودة مع أسئلة تطبيقية من محتوى الكتاب
+    توليد اختبارات عالية الجودة مع أسئلة تطبيقية من محتوى الكتاب
     """
-    # 1. تحديد نص البحث (فصول محددة أو مفهوم علاجي)
+    # تحديد عنوان الاختبار ونص البحث
     if target_concept:
         search_query = f"تمارين ومسائل وأمثلة محلولة وتطبيقات عملية عن {target_concept}"
         quiz_title = f"اختبار علاجي - {target_concept}"
+        mode = f"علاجي لمفهوم {target_concept}"
     elif selected_chapters:
         chapters_str = ", ".join(selected_chapters)
         search_query = f"أسئلة ومسائل وتمارين وتطبيقات عن {chapters_str}"
         quiz_title = f"اختبار دوري - {chapters_str}"
+        mode = f"دوري للفصول {chapters_str}"
     else:
         search_query = "أسئلة ومسائل رياضيات الصف الثاني متوسط"
         quiz_title = "اختبار عام"
+        mode = "عام للمنهج"
     
-    context = ""
-    try:
-        index = faiss.read_index(os.path.join(RAG_DATA_DIR, "index.faiss"))
-        with open(os.path.join(RAG_DATA_DIR, "chunks.pkl"), "rb") as f:
-            chunks = pickle.load(f)
-        
-        # ✅ التحسين الكبير: زيادة من 3 إلى 20 للحصول على تغطية شاملة
-        query_vector = embedding_model.encode([search_query])
-        _, indices = index.search(np.array([query_vector]).astype('float32'), k=20)
-        
-        # جمع النصوص مع معالجة محسّنة
-        retrieved_chunks = []
-        for i in indices[0]:
-            if i != -1 and i < len(chunks):
-                chunk_data = chunks[i]
-                # التعامل مع chunks كـ dict أو string
-                if isinstance(chunk_data, dict):
-                    text = chunk_data.get('content', '')
-                else:
-                    text = str(chunk_data)
-                
-                if text and len(text) > 50:
-                    retrieved_chunks.append(text)
-        
-        context = "\n---\n".join(retrieved_chunks[:15])
-        
-    except Exception as e:
-        print(f"⚠️ خطأ في RAG: {e}")
-        context = "اعتمد على مفاهيم الكتاب العامة."
-
-    mode = f"علاجي لمفهوم {target_concept}" if target_concept else f"دوري للفصول {', '.join(selected_chapters) if selected_chapters else 'المنهج'}"
+    # التحقق من توفر Groq
+    if not groq_client:
+        return {
+            "error": "خدمة توليد الاختبارات غير متاحة. يرجى التأكد من إعداد GROQ_API_KEY.",
+            "quiz_name": quiz_title,
+            "questions": []
+        }
     
-    # ✅ Prompt محسّن جداً لتوليد أسئلة تطبيقية عالية الجودة
+    # استرجاع السياق من RAG
+    retrieved_chunks = search_rag(search_query, top_k=20)
+    context = "\n---\n".join(retrieved_chunks[:15]) if retrieved_chunks else "اعتمد على مفاهيم الكتاب العامة."
+    
+    # بناء الـ Prompt
     system_prompt = """أنت خبير في تصميم اختبارات الرياضيات للمرحلة المتوسطة.
 
 قواعد صارمة:
@@ -197,14 +280,13 @@ def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, targe
 - عدد الأسئلة: 5 أسئلة
 - كل سؤال له 4 خيارات
 - الأسئلة يجب أن تكون متنوعة (30% حسابات، 40% مسائل كلامية، 30% مفاهيم)
-- الخيارات يجب أن تكون معقولة ومنطقية
 
 **صيغة JSON المطلوبة حصراً:**
 {{
   "quiz_name": "{quiz_title}",
   "questions": [
     {{
-      "question": "نص السؤال بوضوح (يفضل أن يتضمن أرقاماً أو حالة عملية)",
+      "question": "نص السؤال بوضوح",
       "options": ["الخيار الأول", "الخيار الثاني", "الخيار الثالث", "الخيار الرابع"],
       "answer": "الإجابة الصحيحة المطابقة تماماً لأحد الخيارات",
       "concept": "المفهوم المستهدف"
@@ -213,27 +295,26 @@ def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, targe
 }}
 
 **مهم جداً:**
-- الإجابة يجب أن تكون نسخة طبق الأصل من أحد الخيارات (نفس الحروف والأرقام)
-- لا تضع أرقام أو حروف (أ، ب، ج، د) في بداية الخيارات
-- تأكد من جودة الأسئلة وارتباطها بالمحتوى المقدم
-- اجعل الأسئلة تطبيقية قدر الإمكان وليست نظرية فقط
-- استخدم أمثلة ومسائل من المحتوى المرجعي"""
+- الإجابة يجب أن تكون نسخة طبق الأصل من أحد الخيارات
+- لا تضع أرقام أو حروف في بداية الخيارات
+- اجعل الأسئلة تطبيقية قدر الإمكان"""
 
+    # استدعاء Groq API
     try:
         response = groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": system_prompt}, 
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.5,  # ✅ توازن بين الإبداع والدقة
-            max_tokens=2500,  # ✅ زيادة من 1000 للأسئلة المفصلة
+            temperature=0.5,
+            max_tokens=2500,
             response_format={"type": "json_object"}
         )
         
         quiz_data = json.loads(response.choices[0].message.content)
         
-        # ✅ التحقق من صحة البيانات المُولدة
+        # التحقق من صحة البيانات
         if "questions" not in quiz_data or len(quiz_data["questions"]) == 0:
             return {
                 "error": "فشل توليد الأسئلة",
@@ -241,23 +322,22 @@ def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, targe
                 "questions": []
             }
         
-        # ✅ تنظيف وتحسين البيانات
+        # تنظيف وتحسين البيانات
         valid_questions = []
         for q in quiz_data["questions"]:
             # التأكد من وجود جميع الحقول
             if not all(key in q for key in ["question", "options", "answer", "concept"]):
                 continue
-                
+            
             # التأكد من 4 خيارات
             if len(q["options"]) != 4:
                 continue
-                
+            
             # التأكد من أن الإجابة موجودة في الخيارات
             if q["answer"] not in q["options"]:
-                # محاولة إيجاد أقرب خيار
                 q["answer"] = q["options"][0]
             
-            # إضافة المفهوم إذا لم يكن موجوداً
+            # إضافة المفهوم الافتراضي
             if not q.get("concept"):
                 q["concept"] = target_concept or "مفاهيم عامة"
             
@@ -272,53 +352,131 @@ def generate_dynamic_quiz(class_name: str, selected_chapters: list = None, targe
                 "questions": []
             }
         
+        logger.info(f"✅ تم توليد اختبار بـ {len(valid_questions)} أسئلة")
         return quiz_data
         
     except json.JSONDecodeError as e:
-        print(f"❌ خطأ في تحليل JSON: {e}")
+        logger.error(f"❌ خطأ في تحليل JSON: {e}")
         return {
             "error": "فشل في تحويل الرد إلى JSON",
             "quiz_name": quiz_title,
             "questions": []
         }
     except Exception as e:
-        print(f"❌ خطأ عام: {e}")
+        logger.error(f"❌ خطأ عام في توليد الاختبار: {e}")
         return {
             "error": str(e),
             "quiz_name": quiz_title,
             "questions": []
         }
 
-# --- وظيفة جلب اختبار الطالب (إصلاح مشكلة عدم الظهور) ---
-def get_student_quiz_logic(student_name: str, class_name: str):
+
+def get_student_quiz_logic(student_name: str, class_name: str) -> Optional[Dict[str, Any]]:
     """
-    ✅ جلب اختبار الطالب مع معالجة أخطاء محسّنة
+    جلب اختبار الطالب (مخصص أو عام)
     """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # أولاً: البحث عن اختبار مخصص (علاجي)
-    cursor.execute(
-        "SELECT quiz_data FROM custom_quizzes WHERE student_name = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
-        (student_name,)
-    )
-    row = cursor.fetchone()
-    if row:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # أولاً: البحث عن اختبار مخصص (علاجي)
+        cursor.execute(
+            """SELECT quiz_data FROM custom_quizzes 
+               WHERE student_name = ? AND status = 'pending' 
+               ORDER BY created_at DESC LIMIT 1""",
+            (student_name,)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            try:
+                return json.loads(row[0])
+            except json.JSONDecodeError:
+                logger.error(f"خطأ في تحليل اختبار الطالب {student_name}")
+                return None
+        
+        # ثانياً: البحث عن اختبار الفصل العام
+        cursor.execute(
+            "SELECT quiz_data FROM class_quizzes WHERE class_name = ?",
+            (class_name,)
+        )
+        row = cursor.fetchone()
         conn.close()
-        try:
-            return json.loads(row[0])
-        except:
-            return None
+        
+        if row:
+            try:
+                return json.loads(row[0])
+            except json.JSONDecodeError:
+                logger.error(f"خطأ في تحليل اختبار الفصل {class_name}")
+                return None
+        
+        return None
+        
+    except sqlite3.Error as e:
+        logger.error(f"❌ خطأ في جلب اختبار الطالب: {e}")
+        return None
+
+# تحديث الدالة في ملف backend/app/core.py
+
+def explain_error_with_rag(question_text: str, correct_answer: str, concept: str):
+    """
+    توليد شرح أكاديمي رصين واستخراج رقم الصفحة من المرجع (نسخة Pro)
+    """
+    context_text = ""
+    page_number = "غير محدد"
     
-    # ثانياً: البحث عن اختبار الفصل العام
-    cursor.execute("SELECT quiz_data FROM class_quizzes WHERE class_name = ?", (class_name,))
-    row = cursor.fetchone()
-    conn.close()
+    try:
+        index_path = os.path.join(RAG_DATA_DIR, "index.faiss")
+        chunks_path = os.path.join(RAG_DATA_DIR, "chunks.pkl")
+        
+        if os.path.exists(index_path):
+            index = faiss.read_index(index_path)
+            with open(chunks_path, "rb") as f:
+                chunks = pickle.load(f)
+            
+            query = f"شرح مفصل لدرس {concept} وقواعد حل {question_text}"
+            query_vector = embedding_model.encode([query])
+            _, indices = index.search(np.array([query_vector]).astype('float32'), k=5)
+            
+            retrieved_chunks = []
+            for i in indices[0]:
+                if i != -1 and i < len(chunks):
+                    chunk_data = chunks[i]
+                    # التحقق من وجود الميتا داتا (رقم الصفحة)
+                    if isinstance(chunk_data, dict):
+                        retrieved_chunks.append(chunk_data.get('content', ''))
+                        meta = chunk_data.get('metadata', {})
+                        # قراءة مفتاح 'page' الذي قمنا بتعريفه في build_index.py
+                        page_number = meta.get('page') or page_number
+                    else:
+                        retrieved_chunks.append(str(chunk_data))
+            
+            context_text = "\n\n".join(retrieved_chunks)
+    except Exception as e:
+        print(f"RAG Error: {e}")
+
+    prompt = f"""
+    أنت معلم خبير في EduRAG Pro. قدم شرحاً دقيقاً ومختصراً.
+    المفهوم: {concept}
+    السؤال: {question_text}
+    الإجابة الصحيحة: {correct_answer}
     
-    if row:
-        try:
-            return json.loads(row[0])
-        except:
-            return None
+    السياق من الكتاب: {context_text[:1500]}
     
-    return None
+    المطلوب:
+    1. اشرح الحل رياضياً بأسلوب سردي رصين.
+    2. لا تكرر الكلام ولا تستخدم لغات غريبة أو إيموجيات.
+    3. اختم بعبارة: "المرجع: الصفحة رقم ({page_number}) من الكتاب الدراسي."
+    """
+
+    try:
+        response = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2
+        )
+        return response.choices[0].message.content
+    except Exception:
+        return f"الإجابة الصحيحة هي {correct_answer}. يرجى مراجعة صفحة {page_number}."
+
+# (احتفظ بباقي الدوال: get_rag_analysis, generate_dynamic_quiz كما هي)
