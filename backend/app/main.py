@@ -45,7 +45,7 @@ app.add_middleware(
 
 # ===== مسار قاعدة البيانات =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "edurag.db")
+DB_PATH = "/Users/abdulaziz/Desktop/æ/EduRAG_Platform/backend/edurag.db"
 
 
 # ===== النماذج (Pydantic Models) =====
@@ -61,6 +61,14 @@ class QuizGenerateRequest(BaseModel):
 class RagRequest(BaseModel):
     """طلب تحليل RAG"""
     class_name: str = Field(..., description="اسم الفصل")
+
+
+class QuizSubmitRequest(BaseModel):
+    """طلب تسليم نتائج الاختبار"""
+    student_name: str = Field(..., description="اسم الطالب")
+    class_name: str = Field(..., description="اسم الفصل")
+    total_score: float = Field(..., description="الدرجة الكلية (نسبة مئوية)")
+    concept_scores: dict = Field(..., description="قاموس يحتوي على المفهوم ودرجته")
 
 
 # ===== Startup Event =====
@@ -397,6 +405,45 @@ async def get_student_quiz(
         )
     
     return quiz
+
+
+@app.post("/api/student/submit-quiz")
+async def submit_quiz(req: QuizSubmitRequest):
+    """حفظ نتيجة اختبار الطالب في قاعدة البيانات"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 1. تحديث أو إضافة الطالب
+            cursor.execute("SELECT id FROM student_stats WHERE name = ? AND class_name = ?", (req.student_name, req.class_name))
+            row = cursor.fetchone()
+            
+            if row:
+                student_id = row['id']
+                # تحديث الدرجة (متوسط تقريبي للتبسيط)
+                cursor.execute("UPDATE student_stats SET total_score = (total_score + ?) / 2.0 WHERE id = ?", (req.total_score, student_id))
+            else:
+                cursor.execute("INSERT INTO student_stats (name, class_name, total_score) VALUES (?, ?, ?)", (req.student_name, req.class_name, req.total_score))
+                student_id = cursor.lastrowid
+                
+            # 2. تحديث درجات المفاهيم
+            for concept, score in req.concept_scores.items():
+                cursor.execute("SELECT id FROM concept_stats WHERE student_id = ? AND concept = ?", (student_id, concept))
+                concept_row = cursor.fetchone()
+                if concept_row:
+                    cursor.execute("UPDATE concept_stats SET score = (score + ?) / 2.0 WHERE id = ?", (score, concept_row['id']))
+                else:
+                    cursor.execute("INSERT INTO concept_stats (student_id, concept, score) VALUES (?, ?, ?)", (student_id, concept, score))
+                    
+            # 3. تحديث حالة الاختبارات العلاجية لهذا الطالب لتصبح مكتملة
+            cursor.execute("UPDATE custom_quizzes SET status = 'completed' WHERE student_name = ? AND status = 'pending'", (req.student_name,))
+            
+            conn.commit()
+            
+        return {"message": "تم اعتماد النتيجة وتحديث لوحة تحكم المعلم بنجاح."}
+    except Exception as e:
+        logger.error(f"خطأ في حفظ نتيجة الاختبار: {e}")
+        raise HTTPException(status_code=500, detail="فشل في حفظ نتيجة الاختبار")
 
 
 # ===== 6. نقاط نهاية RAG =====

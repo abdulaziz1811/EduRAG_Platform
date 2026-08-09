@@ -57,25 +57,74 @@ export default function StudentIntegratedPage() {
     if (!formData.name || !formData.className) return alert("يرجى إكمال البيانات المطلوبة أولاً.");
     setLoading(true);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/quiz/generate-and-assign`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chapters: formData.chapter ? [formData.chapter] : [],
-          class_name: formData.className,
-          student_name: formData.name
-        })
-      });
+      const query = new URLSearchParams({
+        name: formData.name,
+        class_name: formData.className
+      }).toString();
+      
+      const res = await fetch(`http://127.0.0.1:8000/api/student/quiz?${query}`);
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        alert(errorData.detail || "عذراً، لم نتمكن من جلب التقييم حالياً. يرجى المحاولة لاحقاً.");
+        setLoading(false);
+        return;
+      }
+      
       const data = await res.json();
 
-      if (data && data.quiz && data.quiz.questions) {
-        setQuizData(data.quiz);
+      if (data && data.questions) {
+        setQuizData(data);
         setStep('quiz');
       } else {
-        alert("عذراً، لم نتمكن من توليد التقييم حالياً. يرجى المحاولة لاحقاً.");
+        alert("الاختبار فارغ أو تالف.");
       }
     } catch (e) {
       alert("خطأ في الاتصال بالسيرفر. تأكد من تشغيل نظام الـ Backend.");
+    }
+    setLoading(false);
+  };
+
+  const submitQuiz = async () => {
+    let correctCount = 0;
+    const conceptScores: any = {};
+    const conceptTotals: any = {};
+    
+    quizData.questions.forEach((q: any, idx: number) => {
+      const isCorrect = answers[idx] === q.answer;
+      if (isCorrect) correctCount++;
+      
+      const concept = q.concept || "مفاهيم عامة";
+      if (!conceptTotals[concept]) {
+        conceptTotals[concept] = 0;
+        conceptScores[concept] = 0;
+      }
+      conceptTotals[concept]++;
+      if (isCorrect) conceptScores[concept]++;
+    });
+    
+    const total_score = (correctCount / quizData.questions.length) * 100;
+    
+    const finalConceptScores: any = {};
+    for (const concept in conceptScores) {
+      finalConceptScores[concept] = (conceptScores[concept] / conceptTotals[concept]) * 100;
+    }
+    
+    setLoading(true);
+    try {
+      await fetch("http://127.0.0.1:8000/api/student/submit-quiz", {
+        method: "POST",
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_name: formData.name,
+          class_name: formData.className,
+          total_score: total_score,
+          concept_scores: finalConceptScores
+        })
+      });
+      setStep('result');
+    } catch(e) {
+      alert("فشل في تسليم الاختبار، يرجى المحاولة مرة أخرى.");
     }
     setLoading(false);
   };
@@ -114,17 +163,7 @@ export default function StudentIntegratedPage() {
                 <option value="فصل (ب)">فصل (ب)</option>
               </select>
 
-              <select 
-                className="w-full p-4 mb-6 bg-slate-100 rounded-2xl font-bold text-slate-800 outline-none"
-                onChange={e => setFormData({ ...formData, chapter: e.target.value })}
-              >
-                <option value="">تحديد الوحدة الدراسية للتقييم</option>
-                <option value="الأعداد النسبية">الوحدة 1: الأعداد النسبية</option>
-                <option value="القوى والجذور">الوحدة 2: القوى والجذور</option>
-                <option value="التناسب">الوحدة 3: التناسب</option>
-                <option value="المساحات">الوحدة 4: المساحات</option>
-                <option value="الجبر">الوحدة 5: الجبر</option>
-              </select>
+              {/* تمت إزالة قائمة اختيار الوحدة لأن الاختبار يأتي جاهزاً من المعلم */}
 
               <button 
                 onClick={startQuiz} 
@@ -170,10 +209,11 @@ export default function StudentIntegratedPage() {
               </div>
               
               <button 
-                onClick={() => setStep('result')} 
+                onClick={submitQuiz}
+                disabled={loading}
                 className="w-full bg-green-600 text-white py-4 rounded-2xl font-black text-xl shadow-lg mt-6 hover:bg-green-700 transition-all"
               >
-                إنهاء الاختبار واعتماد الإجابات
+                {loading ? "جاري تسليم الإجابات..." : "إنهاء الاختبار واعتماد الإجابات"}
               </button>
             </motion.div>
           )}

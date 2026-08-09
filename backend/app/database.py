@@ -15,8 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # مسار قاعدة البيانات
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "edurag.db")
+DB_PATH = "/Users/abdulaziz/Desktop/æ/EduRAG_Platform/backend/edurag.db"
 
 
 @contextmanager
